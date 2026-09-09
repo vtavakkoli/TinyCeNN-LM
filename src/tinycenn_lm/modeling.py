@@ -13,19 +13,36 @@ from .cenn import CeNNConfig, FastCeNNCore
 DEFAULT_BASE_MODEL = "arnir0/Tiny-LLM"
 
 
+def _floating_reference_parameter(module: nn.Module) -> nn.Parameter | None:
+    """Return a representative floating-point parameter for device/dtype alignment."""
+    return next((p for p in module.parameters() if p.is_floating_point()), None)
+
+
 class HybridDecoderLayer(nn.Module):
     """Wrap a pretrained decoder layer with a zero-init recurrent CeNN residual.
 
     The base layer is kept intact, including its attention behavior. TinyCeNN-LM
     v0.1 intentionally disables Transformer-only KV caching because the CeNN branch
     also needs its own recurrent neighborhood state for exact incremental decoding.
+
+    The newly created CeNN branch inherits the pretrained decoder layer's floating
+    point dtype/device. This is essential for BF16/FP16 inference: a BF16 hidden
+    state cannot be convolved with an FP32 CeNN kernel without an explicit cast.
     """
 
     def __init__(self, base_layer: nn.Module, config: CeNNConfig) -> None:
         super().__init__()
         self.base_layer = base_layer
         self.cenn = FastCeNNCore(config)
-        self.residual_scale = nn.Parameter(torch.ones(()))
+
+        reference = _floating_reference_parameter(base_layer)
+        if reference is None:
+            self.residual_scale = nn.Parameter(torch.ones(()))
+        else:
+            self.cenn.to(device=reference.device, dtype=reference.dtype)
+            self.residual_scale = nn.Parameter(
+                torch.ones((), device=reference.device, dtype=reference.dtype)
+            )
 
     def forward(self, *args, **kwargs):
         if kwargs.get("use_cache", False):
@@ -218,10 +235,17 @@ def build_from_adapter(
 
     kwargs = {"attn_implementation": attn_implementation}
     if dtype is not None:
-        kwargs["torch_dtype"] = dtype
+        # Modern Transformers uses `dtype`; `torch_dtype` is deprecated.
+        kwargs["dtype"] = dtype
     model = AutoModelForCausalLM.from_pretrained(base_model, **kwargs)
     inject_cenn(model, config=config, layer_indices=layer_indices)
     load_adapter(model, adapter_dir)
+
+    move_kwargs: dict[str, object] = {}
     if device is not None:
-        model.to(device)
+        move_kwargs["device"] = device
+    if dtype is not None:
+        move_kwargs["dtype"] = dtype
+    if move_kwargs:
+        model.to(**move_kwargs)
     return model
