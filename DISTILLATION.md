@@ -35,6 +35,8 @@ L = 1.0 * CE(next token)
 
 The student is trained only through the CeNN replacement core in v0.2. The copied embedding, final norm and LM head remain frozen so the experiment isolates whether CeNN dynamics can recover the removed Transformer computation.
 
+The original 10M-token experiment remains in `scripts/train_distill.py` unchanged for reproducibility. The stronger continuation protocol is versioned separately in `scripts/train_distill_rigorous.py`.
+
 ## Rigorous-v2 benchmark protocol
 
 The continuation experiment strengthens the original 10M-token proof-of-concept without changing the CeNN architecture.
@@ -67,7 +69,7 @@ This removes the previous dependence on raw FineWeb streaming order while preser
 
 ### Continuation instead of restart
 
-`train_distill.py` accepts `--resume-student-dir`. The rigorous Colab notebook downloads the published 10M-token `TinyCeNN-LM-Distilled` best checkpoint and continues from it with:
+`train_distill_rigorous.py` accepts `--resume-student-dir`. The rigorous Colab notebook downloads the published 10M-token `TinyCeNN-LM-Distilled` best checkpoint and continues from it with:
 
 ```text
 additional tokens = 30,000,000
@@ -76,7 +78,7 @@ CeNN steps        = 7
 context           = 256
 ```
 
-The report records tokens from the previous checkpoint, tokens in the current run, and cumulative distillation tokens separately.
+The report records tokens from the previous checkpoint, tokens in the current run, and cumulative distillation tokens separately. The resumed model is snapshotted as **best-at-update-0**, so the reported best metric and published best weights remain identical even if continuation does not improve.
 
 ### Teacher-gap target
 
@@ -110,7 +112,7 @@ The rigorous notebook publishes a versioned model as `<HF-user>/TinyCeNN-LM-Dist
 ## CLI — rigorous continuation
 
 ```bash
-python scripts/train_distill.py \
+python scripts/train_distill_rigorous.py \
   --resume-student-dir /path/to/TinyCeNN-LM-Distilled \
   --max-tokens 30000000 \
   --context-length 256 \
@@ -133,7 +135,7 @@ python scripts/train_distill.py \
 
 ## Reproduce a published checkpoint
 
-The evaluator can use a local checkpoint or download directly from Hugging Face. It reconstructs the same deterministic held-out batches, verifies their SHA-256 fingerprint, evaluates teacher and student, and fails if the reloaded student CE differs from the saved best CE by more than the configured tolerance.
+The evaluator can use a local checkpoint or download directly from Hugging Face. It reconstructs the same deterministic held-out batches from the saved dataset/split/text-field settings, verifies their SHA-256 fingerprint, evaluates teacher and student, and fails if the reloaded student CE differs from the saved best CE by more than the configured tolerance.
 
 ```bash
 python scripts/eval_distilled.py \
@@ -152,6 +154,7 @@ RIGOROUS REMOTE BENCHMARK: PASS
 `distillation_report.json` now records:
 
 - benchmark protocol version;
+- dataset, dataset config, split and text field;
 - deterministic validation split;
 - exact held-out batch/token count;
 - SHA-256 benchmark fingerprint;
