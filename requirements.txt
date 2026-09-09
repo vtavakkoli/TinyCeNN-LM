@@ -1,0 +1,5 @@
+torch>=2.3
+transformers>=4.45
+datasets>=2.20
+sentencepiece>=0.2
+safetensors>=0.4
