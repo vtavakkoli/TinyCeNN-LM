@@ -16,9 +16,9 @@ DEFAULT_BASE_MODEL = "arnir0/Tiny-LLM"
 class HybridDecoderLayer(nn.Module):
     """Wrap a pretrained decoder layer with a zero-init recurrent CeNN residual.
 
-    The base layer is kept intact, including its KV-cache and attention behavior.
-    This makes Hugging Face ``generate`` continue to work while CeNN adds recurrent,
-    causal local state evolution after the pretrained layer.
+    The base layer is kept intact, including its attention behavior. TinyCeNN-LM
+    v0.1 intentionally disables Transformer-only KV caching because the CeNN branch
+    also needs its own recurrent neighborhood state for exact incremental decoding.
     """
 
     def __init__(self, base_layer: nn.Module, config: CeNNConfig) -> None:
@@ -28,6 +28,13 @@ class HybridDecoderLayer(nn.Module):
         self.residual_scale = nn.Parameter(torch.ones(()))
 
     def forward(self, *args, **kwargs):
+        if kwargs.get("use_cache", False):
+            raise RuntimeError(
+                "TinyCeNN-LM v0.1 requires use_cache=False. The Transformer KV cache "
+                "does not contain the per-step CeNN neighborhood state needed for exact "
+                "incremental generation. Full-prefix generation is correct; a dedicated "
+                "streaming CeNN cache is planned for a later version."
+            )
         outputs = self.base_layer(*args, **kwargs)
 
         if torch.is_tensor(outputs):
@@ -83,6 +90,13 @@ def inject_cenn(
             f"CeNN hidden_size={config.hidden_size} does not match "
             f"model hidden_size={hidden_size}"
         )
+
+    # A Transformer KV cache alone is insufficient for the recurrent CeNN state.
+    # Disable it globally to prevent a silent train/inference mismatch.
+    if hasattr(model, "config"):
+        model.config.use_cache = False
+    if hasattr(model, "generation_config"):
+        model.generation_config.use_cache = False
 
     for index in layer_indices:
         if index < 0 or index >= len(layers):

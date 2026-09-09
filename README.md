@@ -97,6 +97,8 @@ python scripts/benchmark.py --adapter checkpoints/tinycenn-base --steps 4
 
 ### 3. Generate text
 
+v0.1 generates with the complete prefix on every decoding step (`use_cache=False`) so the CeNN neighborhood is mathematically identical to training. This is slower than KV-cached decoding but correct. A recurrent CeNN streaming cache is planned next.
+
 ```bash
 python scripts/generate.py \
   --adapter checkpoints/tinycenn-base \
@@ -122,14 +124,15 @@ Measure validation loss/perplexity, tokens/s, peak VRAM, trainable parameters an
 1. **Preserve the pretrained model.** CeNN starts as an exact no-op.
 2. **No information leakage.** All neighborhood convolutions are left-padded and causal.
 3. **Parameter-efficient depth.** Recurrent steps share the same weights.
-4. **Fast CUDA path.** The core uses depthwise `conv1d`, linear projections and PyTorch SDPA in the base model.
-5. **Robust experiments.** Gradient clipping, mixed precision, finite-loss checks, streaming data, deterministic seeding and lightweight adapter checkpoints are built in.
-6. **Easy rollback.** The base Hugging Face checkpoint is never overwritten; TinyCeNN weights are saved separately.
+4. **Fast CUDA training path.** The core uses depthwise `conv1d`, linear projections, optional `torch.compile`, and PyTorch SDPA in the base model.
+5. **Correct autoregressive semantics.** v0.1 intentionally uses `use_cache=False` during generation. A normal Transformer KV cache does not preserve the recurrent CeNN neighborhood states, so disabling it avoids a silent train/inference mismatch.
+6. **Robust experiments.** Gradient clipping, mixed precision, finite-loss checks, streaming data, deterministic seeding and lightweight adapter checkpoints are built in.
+7. **Easy rollback.** The base Hugging Face checkpoint is never overwritten; TinyCeNN weights are saved separately.
 
 ## Roadmap
 
 - **v0.1:** residual CeNN adaptation of the pretrained Tiny-LLM layer.
-- **v0.2:** teacher-distilled CeNN-only decoder replacement.
+- **v0.2:** teacher-distilled CeNN-only decoder replacement plus a dedicated streaming CeNN state cache for fast token-by-token generation.
 - **v0.3:** continued base-model pretraining and controlled Transformer/CeNN scaling studies.
 - **v0.4:** instruction/SFT stage (`TinyCeNN-Chat`) after a successful base model.
 

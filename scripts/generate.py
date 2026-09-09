@@ -35,7 +35,7 @@ def main():
             do_sample=args.temperature > 0,
             temperature=max(args.temperature, 1e-5),
             top_p=args.top_p,
-            use_cache=True,
+            use_cache=False,
         )
     print(tokenizer.decode(output[0], skip_special_tokens=True))
 

@@ -50,3 +50,15 @@ def test_hybrid_wrapper_preserves_base_output_initially():
     outputs = layer(x)
     torch.testing.assert_close(outputs[0], x * 2, atol=0, rtol=0)
     assert outputs[1] == "cache"
+
+
+def test_hybrid_wrapper_rejects_transformer_only_kv_cache():
+    config = CeNNConfig(hidden_size=8, steps=2, expansion=2)
+    layer = HybridDecoderLayer(DummyLayer(), config)
+    x = torch.randn(1, 3, 8)
+    try:
+        layer(x, use_cache=True)
+    except RuntimeError as exc:
+        assert "requires use_cache=False" in str(exc)
+    else:
+        raise AssertionError("use_cache=True must not silently bypass CeNN history")
