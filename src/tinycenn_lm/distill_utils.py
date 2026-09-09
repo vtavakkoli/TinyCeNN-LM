@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import random
+import struct
 from collections.abc import Iterable, Iterator
 from contextlib import nullcontext
 
@@ -86,11 +87,16 @@ def collect_eval_batches(rows, tokenizer, text_field: str, block_size: int, batc
 
 
 def evaluation_fingerprint(batches: list[torch.Tensor]) -> str:
-    """Stable SHA256 fingerprint of the exact held-out token batches."""
+    """Stable SHA256 fingerprint of the exact held-out token batches.
+
+    Tokens are encoded explicitly as little-endian signed int64 values, avoiding
+    NumPy and platform-dependent tensor byte representations.
+    """
     digest = hashlib.sha256()
     for batch in batches:
-        tensor = batch.detach().to(device="cpu", dtype=torch.int64).contiguous()
-        digest.update(tensor.numpy().tobytes())
+        tensor = batch.detach().to(device="cpu", dtype=torch.int64).contiguous().view(-1)
+        for token_id in tensor.tolist():
+            digest.update(struct.pack("<q", int(token_id)))
     return digest.hexdigest()
 
 
