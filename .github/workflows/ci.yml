@@ -32,31 +32,28 @@ jobs:
           import re
           from pathlib import Path
 
-          path = Path("notebooks/TinyCeNN_LM_Colab.ipynb")
-          source = path.read_text(encoding="utf-8")
-          notebook = json.loads(source)
-          assert notebook["nbformat"] == 4
-
-          leaked = re.findall(r"hf_[A-Za-z0-9]{24,}", source)
-          assert not leaked, "A Hugging Face token-like credential is embedded in the notebook"
-
-          for index, cell in enumerate(notebook.get("cells", [])):
-              if cell.get("cell_type") != "code":
-                  continue
-              cell_source = "".join(cell.get("source", []))
-              # Colab/IPython shell and magic lines are valid notebook syntax but not Python AST syntax.
-              # Replace them with `pass` instead of deleting them so indented if/else blocks remain valid.
-              cleaned_lines = []
-              for line in cell_source.splitlines():
-                  stripped = line.lstrip()
-                  if stripped.startswith(("!", "%")):
-                      indent = line[: len(line) - len(stripped)]
-                      cleaned_lines.append(indent + "pass")
-                  else:
-                      cleaned_lines.append(line)
-              compile("\n".join(cleaned_lines), f"notebook_cell_{index}", "exec")
-
-          print("Notebook JSON/code cells valid; no embedded HF token-like credential found")
+          paths = sorted(Path("notebooks").glob("*.ipynb"))
+          assert paths, "No notebooks found"
+          for path in paths:
+              source = path.read_text(encoding="utf-8")
+              notebook = json.loads(source)
+              assert notebook["nbformat"] == 4
+              leaked = re.findall(r"hf_[A-Za-z0-9]{24,}", source)
+              assert not leaked, f"HF token-like credential embedded in {path}"
+              for index, cell in enumerate(notebook.get("cells", [])):
+                  if cell.get("cell_type") != "code":
+                      continue
+                  cell_source = "".join(cell.get("source", []))
+                  cleaned_lines = []
+                  for line in cell_source.splitlines():
+                      stripped = line.lstrip()
+                      if stripped.startswith(("!", "%")):
+                          indent = line[: len(line) - len(stripped)]
+                          cleaned_lines.append(indent + "pass")
+                      else:
+                          cleaned_lines.append(line)
+                  compile("\n".join(cleaned_lines), f"{path.name}:cell_{index}", "exec")
+              print(f"validated {path}")
           PY
       - name: Docker Compose syntax check
         run: |
