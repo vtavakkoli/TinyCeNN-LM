@@ -1,0 +1,92 @@
+services:
+  train:
+    build:
+      context: .
+      args:
+        PYTORCH_IMAGE: ${PYTORCH_IMAGE:-pytorch/pytorch:2.14.0-cuda12.6-cudnn9-runtime}
+    image: tinycenn-lm:local
+    gpus: all
+    shm_size: "2gb"
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /cache/huggingface
+      TRANSFORMERS_CACHE: /cache/huggingface/transformers
+      HF_DATASETS_CACHE: /cache/huggingface/datasets
+      TOKENIZERS_PARALLELISM: "true"
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      BASE_MODEL: ${BASE_MODEL:-arnir0/Tiny-LLM}
+      DATASET: ${DATASET:-HuggingFaceFW/fineweb}
+      DATASET_CONFIG: ${DATASET_CONFIG:-sample-10BT}
+      OUTPUT_DIR: ${OUTPUT_DIR:-/workspace/checkpoints/tinycenn-base}
+      MAX_TOKENS: ${MAX_TOKENS:-1000000}
+      CONTEXT_LENGTH: ${CONTEXT_LENGTH:-256}
+      BATCH_SIZE: ${BATCH_SIZE:-4}
+      GRAD_ACCUM: ${GRAD_ACCUM:-8}
+      CENN_STEPS: ${CENN_STEPS:-4}
+      LEARNING_RATE: ${LEARNING_RATE:-0.002}
+      EVAL_EVERY: ${EVAL_EVERY:-25}
+      EVAL_BATCHES: ${EVAL_BATCHES:-8}
+      EVAL_BATCH_SIZE: ${EVAL_BATCH_SIZE:-4}
+      HEALTH_MIN_IMPROVEMENT: ${HEALTH_MIN_IMPROVEMENT:-0.002}
+      DIVERGENCE_FACTOR: ${DIVERGENCE_FACTOR:-1.25}
+      FAIL_ON_NO_IMPROVEMENT: ${FAIL_ON_NO_IMPROVEMENT:-0}
+      NO_COMPILE: ${NO_COMPILE:-0}
+    volumes:
+      - ./checkpoints:/workspace/checkpoints
+      - ./runs:/workspace/runs
+      - hf-cache:/cache/huggingface
+    command: ["bash", "scripts/docker_train.sh"]
+
+  benchmark:
+    build:
+      context: .
+      args:
+        PYTORCH_IMAGE: ${PYTORCH_IMAGE:-pytorch/pytorch:2.14.0-cuda12.6-cudnn9-runtime}
+    image: tinycenn-lm:local
+    gpus: all
+    shm_size: "2gb"
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /cache/huggingface
+      ADAPTER: ${ADAPTER:-/workspace/checkpoints/tinycenn-base-best}
+      CENN_STEPS: ${CENN_STEPS:-4}
+      CONTEXT_LENGTH: ${CONTEXT_LENGTH:-256}
+      BATCH_SIZE: ${BENCH_BATCH_SIZE:-4}
+    volumes:
+      - ./checkpoints:/workspace/checkpoints
+      - hf-cache:/cache/huggingface
+    command:
+      - bash
+      - -lc
+      - >-
+        python scripts/benchmark.py
+        --adapter "$${ADAPTER}"
+        --steps "$${CENN_STEPS}"
+        --context-length "$${CONTEXT_LENGTH}"
+        --batch-size "$${BATCH_SIZE}"
+
+  generate:
+    build:
+      context: .
+      args:
+        PYTORCH_IMAGE: ${PYTORCH_IMAGE:-pytorch/pytorch:2.14.0-cuda12.6-cudnn9-runtime}
+    image: tinycenn-lm:local
+    gpus: all
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /cache/huggingface
+      ADAPTER: ${ADAPTER:-/workspace/checkpoints/tinycenn-base-best}
+      PROMPT: ${PROMPT:-The future of efficient AI is}
+    volumes:
+      - ./checkpoints:/workspace/checkpoints
+      - hf-cache:/cache/huggingface
+    command:
+      - bash
+      - -lc
+      - >-
+        python scripts/generate.py
+        --adapter "$${ADAPTER}"
+        --prompt "$${PROMPT}"
+
+volumes:
+  hf-cache:
