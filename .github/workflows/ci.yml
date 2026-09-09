@@ -25,7 +25,7 @@ jobs:
         run: python -m compileall -q src scripts tests
       - name: Shell syntax check
         run: bash -n scripts/docker_train.sh
-      - name: Notebook JSON and credential check
+      - name: Notebook JSON, code-cell, and credential check
         run: |
           python - <<'PY'
           import json
@@ -33,12 +33,26 @@ jobs:
           from pathlib import Path
 
           path = Path("notebooks/TinyCeNN_LM_Colab.ipynb")
-          notebook = json.loads(path.read_text(encoding="utf-8"))
-          assert notebook["nbformat"] == 4
           source = path.read_text(encoding="utf-8")
+          notebook = json.loads(source)
+          assert notebook["nbformat"] == 4
+
           leaked = re.findall(r"hf_[A-Za-z0-9]{24,}", source)
           assert not leaked, "A Hugging Face token-like credential is embedded in the notebook"
-          print("Notebook JSON valid; no embedded HF token-like credential found")
+
+          for index, cell in enumerate(notebook.get("cells", [])):
+              if cell.get("cell_type") != "code":
+                  continue
+              cell_source = "".join(cell.get("source", []))
+              # Colab/IPython shell and magic lines are valid notebook syntax but not Python AST syntax.
+              cleaned = "\n".join(
+                  line
+                  for line in cell_source.splitlines()
+                  if not line.lstrip().startswith(("!", "%"))
+              )
+              compile(cleaned, f"notebook_cell_{index}", "exec")
+
+          print("Notebook JSON/code cells valid; no embedded HF token-like credential found")
           PY
       - name: Docker Compose syntax check
         run: |
