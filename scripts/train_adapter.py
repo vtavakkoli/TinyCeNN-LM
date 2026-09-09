@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import random
 import time
 from collections.abc import Iterator
 from contextlib import nullcontext
+from pathlib import Path
 
 import torch
 from datasets import load_dataset
@@ -23,7 +25,7 @@ from tinycenn_lm import (
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Train a fast CeNN residual on arnir0/Tiny-LLM")
+    p = argparse.ArgumentParser(description="Train and health-check a CeNN residual on Tiny-LLM")
     p.add_argument("--base-model", default=DEFAULT_BASE_MODEL)
     p.add_argument("--dataset", default="HuggingFaceFW/fineweb")
     p.add_argument("--dataset-config", default="sample-10BT")
@@ -31,9 +33,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--text-field", default="text")
     p.add_argument("--output-dir", default="checkpoints/tinycenn-base")
     p.add_argument("--context-length", type=int, default=256)
-    p.add_argument("--batch-size", type=int, default=8)
-    p.add_argument("--grad-accum", type=int, default=4)
-    p.add_argument("--max-tokens", type=int, default=10_000_000)
+    p.add_argument("--batch-size", type=int, default=4)
+    p.add_argument("--grad-accum", type=int, default=8)
+    p.add_argument("--max-tokens", type=int, default=1_000_000)
     p.add_argument("--learning-rate", type=float, default=2e-3)
     p.add_argument("--weight-decay", type=float, default=0.01)
     p.add_argument("--warmup-ratio", type=float, default=0.03)
@@ -44,8 +46,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dilations", default="1,2,4,8")
     p.add_argument("--dropout", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--log-every", type=int, default=20)
-    p.add_argument("--save-every", type=int, default=500)
+    p.add_argument("--log-every", type=int, default=10)
+    p.add_argument("--save-every", type=int, default=0)
+    p.add_argument("--eval-every", type=int, default=25)
+    p.add_argument("--eval-batches", type=int, default=8)
+    p.add_argument("--eval-batch-size", type=int, default=4)
+    p.add_argument("--eval-shuffle-buffer", type=int, default=2000)
+    p.add_argument("--health-min-improvement", type=float, default=0.002)
+    p.add_argument("--divergence-factor", type=float, default=1.25)
+    p.add_argument("--fail-on-no-improvement", action="store_true")
     p.add_argument("--train-lm-head", action="store_true")
     p.add_argument("--train-embeddings", action="store_true")
     p.add_argument("--no-compile", action="store_true")
@@ -85,7 +94,6 @@ def token_blocks(dataset, tokenizer, text_field: str, block_size: int) -> Iterat
             offset += block_size
             yield torch.tensor(block, dtype=torch.long)
 
-        # Periodically compact without doing O(n) work for every block.
         if offset > 1_000_000:
             buffer = buffer[offset:]
             offset = 0
@@ -100,12 +108,62 @@ def batch_blocks(blocks: Iterator[torch.Tensor], batch_size: int) -> Iterator[to
             batch.clear()
 
 
+def collect_eval_batches(dataset, tokenizer, text_field: str, block_size: int, batch_size: int, count: int):
+    batches = batch_blocks(token_blocks(dataset, tokenizer, text_field, block_size), batch_size)
+    out: list[torch.Tensor] = []
+    for _ in range(count):
+        try:
+            out.append(next(batches))
+        except StopIteration:
+            break
+    if not out:
+        raise RuntimeError("could not build any evaluation batches")
+    return out
+
+
 def cosine_multiplier(step: int, total_steps: int, warmup_steps: int) -> float:
-    if step < warmup_steps:
+    if step <= warmup_steps:
         return max(step, 1) / max(warmup_steps, 1)
     progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
     progress = min(max(progress, 0.0), 1.0)
     return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+
+def safe_perplexity(loss: float) -> float:
+    return math.exp(min(loss, 50.0))
+
+
+@torch.inference_mode()
+def evaluate(model, batches: list[torch.Tensor], device: torch.device, dtype: torch.dtype) -> float:
+    was_training = model.training
+    model.eval()
+    total_loss = 0.0
+    total_tokens = 0
+    amp_context = (
+        (lambda: torch.autocast(device_type="cuda", dtype=dtype))
+        if device.type == "cuda"
+        else nullcontext
+    )
+    for cpu_ids in batches:
+        input_ids = cpu_ids.to(device, non_blocking=True)
+        with amp_context():
+            outputs = model(input_ids=input_ids, labels=input_ids, use_cache=False)
+        n = input_ids.numel()
+        loss = float(outputs.loss.detach().float().item())
+        if not math.isfinite(loss):
+            return float("inf")
+        total_loss += loss * n
+        total_tokens += n
+    if was_training:
+        model.train()
+    return total_loss / max(total_tokens, 1)
+
+
+def write_report(output_dir: Path, report: dict) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "training_report.json"
+    path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(f"health report: {path}")
 
 
 def main() -> None:
@@ -114,12 +172,18 @@ def main() -> None:
         raise ValueError("context length is too small")
     if args.max_tokens < args.context_length * args.batch_size:
         raise ValueError("max-tokens must cover at least one batch")
+    if args.eval_batches < 1 or args.eval_batch_size < 1:
+        raise ValueError("evaluation batch settings must be >= 1")
+    if args.divergence_factor <= 1.0:
+        raise ValueError("divergence-factor must be > 1.0")
 
+    output_dir = Path(args.output_dir)
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = choose_dtype(device)
     print(f"device={device} dtype={dtype}")
     if device.type == "cuda":
+        print(f"gpu={torch.cuda.get_device_name(0)}")
         torch.set_float32_matmul_precision("high")
         torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -150,14 +214,6 @@ def main() -> None:
     )
     model.config.use_cache = False
     model.to(device)
-    model.train()
-    train_model = model
-    if not args.no_compile and device.type == "cuda" and hasattr(torch, "compile"):
-        try:
-            train_model = torch.compile(model, mode="reduce-overhead", dynamic=False)
-            print("torch.compile enabled (reduce-overhead)")
-        except Exception as exc:
-            print(f"torch.compile unavailable; continuing in eager mode: {exc}")
 
     summary = trainable_parameter_summary(model)
     print(
@@ -166,6 +222,33 @@ def main() -> None:
         f"({summary['trainable_percent']:.2f}%)"
     )
     print(f"CeNN recurrent steps={args.steps}, dilations={dilations}")
+
+    # FineWeb sample-10BT has no official validation split. A separately shuffled,
+    # fixed monitoring sample is therefore used to detect improvement/divergence.
+    # This is a health check, not a publication-grade held-out benchmark.
+    print("loading evaluation monitoring sample...")
+    eval_dataset = load_dataset(
+        args.dataset,
+        args.dataset_config,
+        split=args.split,
+        streaming=True,
+    ).shuffle(seed=args.seed + 10_000, buffer_size=args.eval_shuffle_buffer)
+    eval_batches = collect_eval_batches(
+        eval_dataset,
+        tokenizer,
+        args.text_field,
+        args.context_length,
+        args.eval_batch_size,
+        args.eval_batches,
+    )
+
+    initial_eval = evaluate(model, eval_batches, device, dtype)
+    if not math.isfinite(initial_eval):
+        raise FloatingPointError("initial evaluation loss is non-finite")
+    print(
+        f"initial_eval_loss={initial_eval:.4f} "
+        f"initial_ppl={safe_perplexity(initial_eval):.2f}"
+    )
 
     trainable = [p for p in model.parameters() if p.requires_grad]
     try:
@@ -185,16 +268,25 @@ def main() -> None:
     total_updates = max(1, math.ceil(args.max_tokens / tokens_per_update))
     warmup_updates = max(1, int(total_updates * args.warmup_ratio))
 
-    dataset = load_dataset(
+    train_dataset = load_dataset(
         args.dataset,
         args.dataset_config,
         split=args.split,
         streaming=True,
     ).shuffle(seed=args.seed, buffer_size=10_000)
     batches = batch_blocks(
-        token_blocks(dataset, tokenizer, args.text_field, args.context_length),
+        token_blocks(train_dataset, tokenizer, args.text_field, args.context_length),
         args.batch_size,
     )
+
+    model.train()
+    train_model = model
+    if not args.no_compile and device.type == "cuda" and hasattr(torch, "compile"):
+        try:
+            train_model = torch.compile(model, mode="reduce-overhead", dynamic=False)
+            print("torch.compile enabled (reduce-overhead)")
+        except Exception as exc:
+            print(f"torch.compile unavailable; continuing in eager mode: {exc}")
 
     amp_context = (
         (lambda: torch.autocast(device_type="cuda", dtype=dtype))
@@ -213,10 +305,14 @@ def main() -> None:
     window_microbatches = 0
     window_tokens = 0
     window_start = time.perf_counter()
+    run_start = window_start
+    best_eval = initial_eval
+    best_update = 0
+    eval_history = [
+        {"update": 0, "tokens": 0, "loss": initial_eval, "perplexity": safe_perplexity(initial_eval)}
+    ]
+    diverged = False
 
-    # Run complete optimizer updates even when max_tokens is not exactly divisible
-    # by the effective batch. The final run may exceed max_tokens by <1 update,
-    # but never drops partially accumulated gradients.
     while update < total_updates:
         input_ids = next(batches).to(device, non_blocking=True)
         with amp_context():
@@ -224,7 +320,9 @@ def main() -> None:
             loss = outputs.loss / args.grad_accum
 
         if not torch.isfinite(loss):
-            raise FloatingPointError(f"non-finite loss at update {update}: {loss.item()}")
+            diverged = True
+            print(f"ERROR: non-finite training loss at update {update}")
+            break
 
         scaler.scale(loss).backward()
         micro += 1
@@ -243,7 +341,12 @@ def main() -> None:
             group["lr"] = args.learning_rate * mult
 
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(trainable, args.grad_clip)
+        grad_norm = float(torch.nn.utils.clip_grad_norm_(trainable, args.grad_clip))
+        if not math.isfinite(grad_norm):
+            diverged = True
+            print(f"ERROR: non-finite gradient norm at update {update}")
+            break
+
         scaler.step(optimizer)
         scaler.update()
         optimizer.zero_grad(set_to_none=True)
@@ -259,13 +362,50 @@ def main() -> None:
             )
             print(
                 f"update={update}/{total_updates} tokens={seen_tokens:,} "
-                f"loss={avg_loss:.4f} lr={lr:.2e} tok/s={tps:,.0f} "
-                f"peak_vram={vram:.2f}GiB"
+                f"loss={avg_loss:.4f} lr={lr:.2e} grad={grad_norm:.3f} "
+                f"tok/s={tps:,.0f} peak_vram={vram:.2f}GiB"
             )
             running_loss = 0.0
             window_microbatches = 0
             window_tokens = 0
             window_start = time.perf_counter()
+
+        should_eval = (
+            update == total_updates
+            or (args.eval_every > 0 and update % args.eval_every == 0)
+        )
+        if should_eval:
+            eval_loss = evaluate(model, eval_batches, device, dtype)
+            eval_history.append(
+                {
+                    "update": update,
+                    "tokens": seen_tokens,
+                    "loss": eval_loss,
+                    "perplexity": safe_perplexity(eval_loss) if math.isfinite(eval_loss) else None,
+                }
+            )
+            print(
+                f"eval update={update}: loss={eval_loss:.4f} "
+                f"ppl={safe_perplexity(eval_loss):.2f}"
+            )
+            if not math.isfinite(eval_loss) or eval_loss > initial_eval * args.divergence_factor:
+                diverged = True
+                print(
+                    "ERROR: evaluation indicates divergence "
+                    f"(threshold={initial_eval * args.divergence_factor:.4f})"
+                )
+                break
+            if eval_loss < best_eval:
+                best_eval = eval_loss
+                best_update = update
+                save_adapter(
+                    model,
+                    f"{args.output_dir}-best",
+                    base_model=args.base_model,
+                    layer_indices=(0,),
+                    config=cenn_config,
+                )
+                print(f"new best adapter saved at update {update}")
 
         if args.save_every > 0 and update % args.save_every == 0:
             save_adapter(
@@ -276,15 +416,76 @@ def main() -> None:
                 config=cenn_config,
             )
 
-    save_adapter(
-        model,
-        args.output_dir,
-        base_model=args.base_model,
-        layer_indices=(0,),
-        config=cenn_config,
+    final_eval = evaluate(model, eval_batches, device, dtype) if not diverged else float("inf")
+    improvement = (initial_eval - best_eval) / max(initial_eval, 1e-12)
+    status = "diverged" if diverged else (
+        "healthy" if improvement >= args.health_min_improvement else "warning_no_improvement"
     )
-    tokenizer.save_pretrained(args.output_dir)
-    print(f"saved adapter to {args.output_dir}")
+
+    if not diverged:
+        save_adapter(
+            model,
+            output_dir,
+            base_model=args.base_model,
+            layer_indices=(0,),
+            config=cenn_config,
+        )
+        tokenizer.save_pretrained(output_dir)
+
+    elapsed_seconds = time.perf_counter() - run_start
+    report = {
+        "status": status,
+        "base_model": args.base_model,
+        "dataset": args.dataset,
+        "dataset_config": args.dataset_config,
+        "context_length": args.context_length,
+        "requested_tokens": args.max_tokens,
+        "seen_tokens": seen_tokens,
+        "updates_completed": update,
+        "total_updates": total_updates,
+        "cenn_steps": args.steps,
+        "cenn_dilations": list(dilations),
+        "parameters": summary,
+        "initial_eval_loss": initial_eval,
+        "initial_perplexity": safe_perplexity(initial_eval),
+        "final_eval_loss": final_eval if math.isfinite(final_eval) else None,
+        "final_perplexity": safe_perplexity(final_eval) if math.isfinite(final_eval) else None,
+        "best_eval_loss": best_eval,
+        "best_perplexity": safe_perplexity(best_eval),
+        "best_update": best_update,
+        "relative_best_improvement": improvement,
+        "health_min_improvement": args.health_min_improvement,
+        "divergence_factor": args.divergence_factor,
+        "elapsed_seconds": elapsed_seconds,
+        "peak_vram_gib": (
+            torch.cuda.max_memory_allocated() / 1024**3 if device.type == "cuda" else 0.0
+        ),
+        "evaluation_note": (
+            "FineWeb sample-10BT has no official validation split; evaluation uses a fixed "
+            "separately shuffled monitoring sample and is intended for training-health checks."
+        ),
+        "eval_history": eval_history,
+    }
+    write_report(output_dir, report)
+
+    print("=" * 72)
+    print(
+        f"TRAINING HEALTH: {status.upper()} | "
+        f"initial_loss={initial_eval:.4f} best_loss={best_eval:.4f} "
+        f"improvement={improvement * 100:.2f}%"
+    )
+    if status == "healthy":
+        print(f"best adapter: {args.output_dir}-best (update {best_update})")
+    elif status == "warning_no_improvement":
+        print("WARNING: run stayed finite but did not improve enough on the monitoring sample.")
+    else:
+        print("ERROR: training diverged; inspect learning rate, gradients and report history.")
+    print("=" * 72)
+
+    if diverged:
+        raise SystemExit(2)
+    if status == "warning_no_improvement" and args.fail_on_no_improvement:
+        raise SystemExit(3)
 
 
 if __name__ == "__main__":
