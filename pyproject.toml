@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tinycenn-lm"
+version = "0.1.0"
+description = "Tiny language-model research lab for recurrent CeNN state cores on pretrained Llama-family models."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Vahid Tavakkoli"}]
+dependencies = [
+  "torch>=2.3",
+  "transformers>=4.45",
+  "datasets>=2.20",
+  "sentencepiece>=0.2",
+  "safetensors>=0.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
