@@ -57,7 +57,7 @@ def main() -> None:
     if report.get("benchmark_protocol") != "rigorous-v2":
         raise RuntimeError(
             "checkpoint was not produced by rigorous-v2 benchmark protocol; "
-            "run the updated continuation notebook first"
+            "run the rigorous continuation notebook first"
         )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -67,6 +67,8 @@ def main() -> None:
     eval_cfg = report["evaluation"]
     eval_batches_count = int(eval_cfg["batches"])
     eval_batch_size = int(eval_cfg["batch_size"])
+    dataset_split = report.get("dataset_split", "train")
+    text_field = report.get("text_field", "text")
 
     tokenizer = AutoTokenizer.from_pretrained(student_dir, use_fast=True)
     if tokenizer.pad_token_id is None:
@@ -85,14 +87,14 @@ def main() -> None:
     eval_raw = load_dataset(
         report["dataset"],
         report["dataset_config"],
-        split="train",
+        split=dataset_split,
         streaming=True,
     )
-    eval_rows = partition_rows(eval_raw, "text", validation=True)
+    eval_rows = partition_rows(eval_raw, text_field, validation=True)
     batches = collect_eval_batches(
         eval_rows,
         tokenizer,
-        "text",
+        text_field,
         context_length,
         eval_batch_size,
         eval_batches_count,
@@ -113,7 +115,7 @@ def main() -> None:
         device=device,
         dtype=dtype,
         temperature=float(distill["temperature"]),
-        kl_chunk_rows=256,
+        kl_chunk_rows=int(distill.get("kl_chunk_rows", 256)),
         ce_weight=float(distill["ce_weight"]),
         kl_weight=float(distill["kl_weight"]),
         hidden_weight=float(distill["hidden_weight"]),
@@ -122,7 +124,7 @@ def main() -> None:
     expected_ce = float(report["best"]["student_ce"])
     actual_ce = float(metrics["student_ce"])
     ce_delta = abs(actual_ce - expected_ce)
-    print(json.dumps({
+    result = {
         "source": str(student_dir),
         "benchmark_protocol": report["benchmark_protocol"],
         "fingerprint_sha256": fingerprint,
@@ -136,9 +138,13 @@ def main() -> None:
         "expected_best_student_ce": expected_ce,
         "ce_absolute_delta": ce_delta,
         "ce_tolerance": args.ce_tolerance,
-    }, indent=2))
+    }
+    print(json.dumps(result, indent=2))
 
-    if not all(math.isfinite(float(metrics[key])) for key in ("student_ce", "teacher_ce", "kl", "hidden")):
+    if not all(
+        math.isfinite(float(metrics[key]))
+        for key in ("student_ce", "teacher_ce", "kl", "hidden")
+    ):
         raise RuntimeError("non-finite benchmark metric")
     if not args.skip_parity_check and ce_delta > args.ce_tolerance:
         raise RuntimeError(
