@@ -21,5 +21,9 @@ jobs:
           python -m pip install -e . --no-deps
       - name: Unit tests
         run: pytest -q
-      - name: Syntax check
+      - name: Python syntax check
         run: python -m compileall -q src scripts tests
+      - name: Shell syntax check
+        run: bash -n scripts/docker_train.sh
+      - name: Docker Compose syntax check
+        run: docker compose config --quiet
