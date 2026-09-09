@@ -9,6 +9,15 @@ from .modeling import (
     save_adapter,
     trainable_parameter_summary,
 )
+from .student import (
+    CeNNReplacementLayer,
+    build_cenn_student,
+    freeze_student_interfaces,
+    load_cenn_student_weights,
+    replace_transformer_with_cenn,
+    save_cenn_student,
+    student_parameter_summary,
+)
 
 __all__ = [
     "CeNNConfig",
@@ -21,4 +30,11 @@ __all__ = [
     "load_adapter",
     "save_adapter",
     "trainable_parameter_summary",
+    "CeNNReplacementLayer",
+    "build_cenn_student",
+    "freeze_student_interfaces",
+    "load_cenn_student_weights",
+    "replace_transformer_with_cenn",
+    "save_cenn_student",
+    "student_parameter_summary",
 ]
