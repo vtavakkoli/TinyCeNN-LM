@@ -85,6 +85,7 @@ def token_blocks(dataset, tokenizer, text_field: str, block_size: int) -> Iterat
             offset += block_size
             yield torch.tensor(block, dtype=torch.long)
 
+        # Periodically compact without doing O(n) work for every block.
         if offset > 1_000_000:
             buffer = buffer[offset:]
             offset = 0
@@ -213,7 +214,10 @@ def main() -> None:
     window_tokens = 0
     window_start = time.perf_counter()
 
-    while seen_tokens < args.max_tokens:
+    # Run complete optimizer updates even when max_tokens is not exactly divisible
+    # by the effective batch. The final run may exceed max_tokens by <1 update,
+    # but never drops partially accumulated gradients.
+    while update < total_updates:
         input_ids = next(batches).to(device, non_blocking=True)
         with amp_context():
             outputs = train_model(input_ids=input_ids, labels=input_ids, use_cache=False)
@@ -233,16 +237,17 @@ def main() -> None:
         if micro % args.grad_accum != 0:
             continue
 
+        next_update = update + 1
+        mult = cosine_multiplier(next_update, total_updates, warmup_updates)
+        for group in optimizer.param_groups:
+            group["lr"] = args.learning_rate * mult
+
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(trainable, args.grad_clip)
         scaler.step(optimizer)
         scaler.update()
         optimizer.zero_grad(set_to_none=True)
-        update += 1
-
-        mult = cosine_multiplier(update, total_updates, warmup_updates)
-        for group in optimizer.param_groups:
-            group["lr"] = args.learning_rate * mult
+        update = next_update
 
         if update % args.log_every == 0 or update == 1:
             elapsed = max(time.perf_counter() - window_start, 1e-6)
@@ -270,9 +275,6 @@ def main() -> None:
                 layer_indices=(0,),
                 config=cenn_config,
             )
-
-        if update >= total_updates:
-            break
 
     save_adapter(
         model,
