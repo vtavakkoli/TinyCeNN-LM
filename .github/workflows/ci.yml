@@ -45,12 +45,16 @@ jobs:
                   continue
               cell_source = "".join(cell.get("source", []))
               # Colab/IPython shell and magic lines are valid notebook syntax but not Python AST syntax.
-              cleaned = "\n".join(
-                  line
-                  for line in cell_source.splitlines()
-                  if not line.lstrip().startswith(("!", "%"))
-              )
-              compile(cleaned, f"notebook_cell_{index}", "exec")
+              # Replace them with `pass` instead of deleting them so indented if/else blocks remain valid.
+              cleaned_lines = []
+              for line in cell_source.splitlines():
+                  stripped = line.lstrip()
+                  if stripped.startswith(("!", "%")):
+                      indent = line[: len(line) - len(stripped)]
+                      cleaned_lines.append(indent + "pass")
+                  else:
+                      cleaned_lines.append(line)
+              compile("\n".join(cleaned_lines), f"notebook_cell_{index}", "exec")
 
           print("Notebook JSON/code cells valid; no embedded HF token-like credential found")
           PY
