@@ -42,6 +42,15 @@ class DummyLayer(nn.Module):
         return (hidden_states * 2, "cache")
 
 
+class ParameterizedDummyLayer(nn.Module):
+    def __init__(self, dtype: torch.dtype) -> None:
+        super().__init__()
+        self.proj = nn.Linear(8, 8, bias=False, dtype=dtype)
+
+    def forward(self, hidden_states, **kwargs):
+        return (self.proj(hidden_states),)
+
+
 def test_hybrid_wrapper_preserves_base_output_initially():
     torch.manual_seed(2)
     config = CeNNConfig(hidden_size=8, steps=4, expansion=2)
@@ -50,6 +59,17 @@ def test_hybrid_wrapper_preserves_base_output_initially():
     outputs = layer(x)
     torch.testing.assert_close(outputs[0], x * 2, atol=0, rtol=0)
     assert outputs[1] == "cache"
+
+
+def test_hybrid_wrapper_inherits_base_layer_bfloat16_dtype():
+    config = CeNNConfig(hidden_size=8, steps=2, expansion=2)
+    base = ParameterizedDummyLayer(torch.bfloat16)
+    layer = HybridDecoderLayer(base, config)
+
+    floating_params = [p for p in layer.cenn.parameters() if p.is_floating_point()]
+    assert floating_params
+    assert all(p.dtype == torch.bfloat16 for p in floating_params)
+    assert layer.residual_scale.dtype == torch.bfloat16
 
 
 def test_hybrid_wrapper_rejects_transformer_only_kv_cache():
