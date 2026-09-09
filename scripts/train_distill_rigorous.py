@@ -35,13 +35,13 @@ from tinycenn_lm.distill_utils import (
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Distill Tiny-LLM Transformer into a CeNN-only student")
+    p = argparse.ArgumentParser(description="Continue Tiny-LLM → CeNN distillation under the rigorous-v2 protocol")
     p.add_argument("--base-model", default=DEFAULT_BASE_MODEL)
     p.add_argument("--dataset", default="HuggingFaceFW/fineweb")
     p.add_argument("--dataset-config", default="sample-10BT")
     p.add_argument("--split", default="train")
     p.add_argument("--text-field", default="text")
-    p.add_argument("--output-dir", default="checkpoints/cenn-student-distill")
+    p.add_argument("--output-dir", default="checkpoints/cenn-student-rigorous-v2")
     p.add_argument("--resume-student-dir", default="")
     p.add_argument("--context-length", type=int, default=256)
     p.add_argument("--batch-size", type=int, default=4)
@@ -133,6 +133,33 @@ def eval_model(teacher, student, batches, device, dtype, args):
         kl_weight=args.kl_weight,
         hidden_weight=args.hidden_weight,
     )
+
+
+def save_best_snapshot(
+    student,
+    tokenizer,
+    best_dir: Path,
+    cenn_config: CeNNConfig,
+    args,
+    *,
+    tokens_this_run: int,
+    cumulative_tokens: int,
+    resume_dir: Path | None,
+) -> None:
+    save_cenn_student(
+        student,
+        best_dir,
+        config=cenn_config,
+        base_model=args.base_model,
+        extra_metadata={
+            "distilled": True,
+            "benchmark_protocol": "rigorous-v2",
+            "tokens_this_run": tokens_this_run,
+            "cumulative_tokens": cumulative_tokens,
+            "resume_source": str(resume_dir) if resume_dir else None,
+        },
+    )
+    tokenizer.save_pretrained(best_dir)
 
 
 def main() -> None:
@@ -231,7 +258,11 @@ def main() -> None:
 
     resume_dir = Path(args.resume_student_dir).expanduser().resolve() if args.resume_student_dir else None
     previous_report = load_previous_report(resume_dir)
-    previous_seen_tokens = int(previous_report.get("cumulative_training_tokens", previous_report.get("seen_tokens", 0))) if previous_report else 0
+    previous_seen_tokens = (
+        int(previous_report.get("cumulative_training_tokens", previous_report.get("seen_tokens", 0)))
+        if previous_report
+        else 0
+    )
     if resume_dir is not None:
         validate_resume_config(resume_dir, cenn_config, args.base_model)
         load_cenn_student_weights(student, resume_dir, map_location="cpu", strict=True)
@@ -244,6 +275,23 @@ def main() -> None:
         f"ppl={run_start['student_ppl']:.2f} | teacher_ce={run_start['teacher_ce']:.4f} "
         f"KL={run_start['kl']:.4f} hidden={run_start['hidden']:.4f}"
     )
+
+    output_dir = Path(args.output_dir)
+    best_dir = Path(str(output_dir) + "-best")
+    # The resumed checkpoint is a valid candidate and must be materialized as the
+    # best-at-update-0 snapshot. This guarantees that report["best"] and the
+    # published best weights remain identical even if continuation never improves.
+    save_best_snapshot(
+        student,
+        tokenizer,
+        best_dir,
+        cenn_config,
+        args,
+        tokens_this_run=0,
+        cumulative_tokens=previous_seen_tokens,
+        resume_dir=resume_dir,
+    )
+    print("saved rigorous best-at-update-0 snapshot")
 
     train_raw = load_dataset(args.dataset, args.dataset_config, split=args.split, streaming=True)
     train_rows = partition_rows(train_raw, args.text_field, validation=False)
@@ -289,8 +337,6 @@ def main() -> None:
         except Exception as exc:
             print(f"torch.compile unavailable, eager mode: {exc}")
 
-    output_dir = Path(args.output_dir)
-    best_dir = Path(str(output_dir) + "-best")
     history = [{"update": 0, "tokens_this_run": 0, **run_start}]
     best = run_start
     best_update = 0
@@ -390,25 +436,24 @@ def main() -> None:
                 f"ppl={metrics['student_ppl']:.2f} teacher_ce={metrics['teacher_ce']:.4f} "
                 f"KL={metrics['kl']:.4f} hidden={metrics['hidden']:.4f}"
             )
-            if not all(math.isfinite(float(metrics[key])) for key in ("student_ce", "kl", "hidden")):
+            if not all(
+                math.isfinite(float(metrics[key])) for key in ("student_ce", "kl", "hidden")
+            ):
                 diverged = True
                 break
             if float(metrics["student_ce"]) < float(best["student_ce"]):
                 best = metrics
                 best_update = update
-                save_cenn_student(
+                save_best_snapshot(
                     student,
+                    tokenizer,
                     best_dir,
-                    config=cenn_config,
-                    base_model=args.base_model,
-                    extra_metadata={
-                        "distilled": True,
-                        "tokens_this_run": seen_tokens,
-                        "cumulative_tokens": previous_seen_tokens + seen_tokens,
-                        "resume_source": str(resume_dir) if resume_dir else None,
-                    },
+                    cenn_config,
+                    args,
+                    tokens_this_run=seen_tokens,
+                    cumulative_tokens=previous_seen_tokens + seen_tokens,
+                    resume_dir=resume_dir,
                 )
-                tokenizer.save_pretrained(best_dir)
                 print(f"new best CeNN student saved at update {update}")
             student.train()
 
@@ -422,6 +467,7 @@ def main() -> None:
             base_model=args.base_model,
             extra_metadata={
                 "distilled": True,
+                "benchmark_protocol": "rigorous-v2",
                 "tokens_this_run": seen_tokens,
                 "cumulative_tokens": cumulative_tokens,
                 "resume_source": str(resume_dir) if resume_dir else None,
@@ -455,6 +501,8 @@ def main() -> None:
         "base_model_teacher": args.base_model,
         "dataset": args.dataset,
         "dataset_config": args.dataset_config,
+        "dataset_split": args.split,
+        "text_field": args.text_field,
         "validation_split": "deterministic text hash: buckets 990-999 / 1000",
         "training_shuffle": {
             "method": "deterministic bounded-memory buffered shuffle",
@@ -484,6 +532,7 @@ def main() -> None:
             "ce_weight": args.ce_weight,
             "kl_weight": args.kl_weight,
             "hidden_weight": args.hidden_weight,
+            "kl_chunk_rows": args.kl_chunk_rows,
             "learning_rate": args.learning_rate,
             "warmup_ratio": args.warmup_ratio,
         },
@@ -506,8 +555,8 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     report_text = json.dumps(report, indent=2)
     (output_dir / "distillation_report.json").write_text(report_text, encoding="utf-8")
-    if best_dir.exists():
-        (best_dir / "distillation_report.json").write_text(report_text, encoding="utf-8")
+    # best_dir always exists because run-start is snapshotted before optimization.
+    (best_dir / "distillation_report.json").write_text(report_text, encoding="utf-8")
 
     print("=" * 88)
     print(
@@ -516,7 +565,7 @@ def main() -> None:
         f"global teacher-gap recovery={recovery * 100:.2f}% | "
         f"cumulative tokens={cumulative_tokens:,}"
     )
-    print(f"best checkpoint: {best_dir if best_dir.exists() else output_dir}")
+    print(f"best checkpoint: {best_dir}")
     print("=" * 88)
     if diverged:
         raise SystemExit(2)
