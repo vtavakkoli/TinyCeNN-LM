@@ -18,6 +18,18 @@ from .student import (
     save_cenn_student,
     student_parameter_summary,
 )
+from .moe import (
+    FastMoECeNNCore,
+    MoECeNNConfig,
+    MoECeNNReplacementLayer,
+    build_moe_cenn_student,
+    freeze_moe_student_interfaces,
+    load_moe_cenn_student_weights,
+    moe_router_stats,
+    replace_transformer_with_moe_cenn,
+    save_moe_cenn_student,
+    warmstart_moe_from_plain_cenn,
+)
 
 __all__ = [
     "CeNNConfig",
@@ -37,4 +49,14 @@ __all__ = [
     "replace_transformer_with_cenn",
     "save_cenn_student",
     "student_parameter_summary",
+    "MoECeNNConfig",
+    "FastMoECeNNCore",
+    "MoECeNNReplacementLayer",
+    "build_moe_cenn_student",
+    "freeze_moe_student_interfaces",
+    "load_moe_cenn_student_weights",
+    "moe_router_stats",
+    "replace_transformer_with_moe_cenn",
+    "save_moe_cenn_student",
+    "warmstart_moe_from_plain_cenn",
 ]
