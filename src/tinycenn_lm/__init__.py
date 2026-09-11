@@ -30,6 +30,18 @@ from .moe import (
     save_moe_cenn_student,
     warmstart_moe_from_plain_cenn,
 )
+from .sharded_moe import (
+    FastShardedMoECeNNCore,
+    ShardedMoECeNNConfig,
+    ShardedMoECeNNReplacementLayer,
+    build_sharded_moe_student,
+    freeze_sharded_moe_interfaces,
+    load_sharded_moe_student_weights,
+    replace_transformer_with_sharded_moe_cenn,
+    save_sharded_moe_student,
+    sharded_router_stats,
+    warmstart_sharded_moe_from_plain_cenn,
+)
 
 __all__ = [
     "CeNNConfig",
@@ -59,4 +71,14 @@ __all__ = [
     "replace_transformer_with_moe_cenn",
     "save_moe_cenn_student",
     "warmstart_moe_from_plain_cenn",
+    "ShardedMoECeNNConfig",
+    "FastShardedMoECeNNCore",
+    "ShardedMoECeNNReplacementLayer",
+    "build_sharded_moe_student",
+    "freeze_sharded_moe_interfaces",
+    "load_sharded_moe_student_weights",
+    "replace_transformer_with_sharded_moe_cenn",
+    "save_sharded_moe_student",
+    "sharded_router_stats",
+    "warmstart_sharded_moe_from_plain_cenn",
 ]
