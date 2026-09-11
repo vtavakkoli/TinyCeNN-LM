@@ -1,0 +1,1 @@
+See SHARDED_MOE.md for the parameter-neutral 8-shard Top-2 routed FFN experiment.
