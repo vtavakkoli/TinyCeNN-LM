@@ -193,7 +193,7 @@ def main() -> None:
 
     load_kwargs = {"attn_implementation": "sdpa"}
     if device.type == "cuda":
-        load_kwargs["torch_dtype"] = dtype
+        load_kwargs["torch_dtype"] = torch.float32
     model = AutoModelForCausalLM.from_pretrained(args.base_model, **load_kwargs)
 
     dilations = tuple(int(x) for x in args.dilations.split(",") if x.strip())

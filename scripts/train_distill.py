@@ -229,7 +229,9 @@ def main() -> None:
     for p in teacher.parameters():
         p.requires_grad = False
 
-    student = AutoModelForCausalLM.from_pretrained(args.base_model, **load_kwargs)
+    student = AutoModelForCausalLM.from_pretrained(
+        args.base_model, attn_implementation="sdpa", dtype=torch.float32
+    )
     dilations = tuple(int(x) for x in args.dilations.split(",") if x.strip())
     cenn_config = CeNNConfig(
         hidden_size=student.config.hidden_size,

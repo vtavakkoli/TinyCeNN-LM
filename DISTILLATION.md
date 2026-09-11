@@ -29,13 +29,18 @@ Default loss:
 
 ```text
 L = 1.0 * CE(next token)
-  + 1.0 * KL(student logits || teacher logits, T=2)
+  + 1.0 * KL(teacher distribution || student distribution, T=2)
   + 0.25 * (1 - cosine(student hidden, teacher hidden))
 ```
 
 The student is trained only through the CeNN replacement core in v0.2. The copied embedding, final norm and LM head remain frozen so the experiment isolates whether CeNN dynamics can recover the removed Transformer computation.
 
-The original 10M-token experiment remains in `scripts/train_distill.py` unchanged for reproducibility. The stronger continuation protocol is versioned separately in `scripts/train_distill_rigorous.py`.
+The original 10M-token workflow remains in `scripts/train_distill.py`, with the
+FP32 training-parameter correction applied. The stronger continuation protocol
+is in `scripts/train_distill_rigorous.py`. Its default still freezes interfaces;
+the [optimized continuation recipe](CONTINUATION.md) can adapt them at a smaller
+learning rate and anneal the distillation weights. Use a historical commit if
+reproducing the earlier low-precision optimizer behavior specifically.
 
 ## Rigorous-v2 benchmark protocol
 

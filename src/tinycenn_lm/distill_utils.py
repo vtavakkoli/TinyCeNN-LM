@@ -47,7 +47,17 @@ def buffered_shuffle(rows: Iterable[dict], *, buffer_size: int, seed: int) -> It
     yield from buffer
 
 
-def token_blocks(rows: Iterable[dict], tokenizer, text_field: str, block_size: int) -> Iterator[torch.Tensor]:
+def token_blocks(
+    rows: Iterable[dict], tokenizer, text_field: str, block_size: int, *, skip_tokens: int = 0
+) -> Iterator[torch.Tensor]:
+    """Pack documents, optionally advancing a deterministic stream before packing.
+
+    Skipping is before tensor allocation and works across document boundaries and
+    changes in batch/context length. Reconstructing a cursor still needs reading
+    and tokenizing the prefix; it does not run the teacher or student on it.
+    """
+    if block_size < 2 or skip_tokens < 0:
+        raise ValueError("block_size must be >= 2 and skip_tokens must be nonnegative")
     buffer: list[int] = []
     offset = 0
     eos = tokenizer.eos_token_id
@@ -55,6 +65,10 @@ def token_blocks(rows: Iterable[dict], tokenizer, text_field: str, block_size: i
         ids = tokenizer(example[text_field], add_special_tokens=False)["input_ids"]
         if eos is not None:
             ids.append(eos)
+        if skip_tokens:
+            skipped = min(skip_tokens, len(ids))
+            skip_tokens -= skipped
+            ids = ids[skipped:]
         buffer.extend(ids)
         while len(buffer) - offset >= block_size:
             yield torch.tensor(buffer[offset : offset + block_size], dtype=torch.long)
@@ -106,6 +120,8 @@ def chunked_kl(
     temperature: float,
     chunk_rows: int,
 ) -> torch.Tensor:
+    if temperature <= 0 or chunk_rows < 1:
+        raise ValueError("temperature and chunk_rows must be positive")
     s = student_logits.reshape(-1, student_logits.shape[-1])
     t = teacher_logits.reshape(-1, teacher_logits.shape[-1])
     total = s.new_zeros((), dtype=torch.float32)

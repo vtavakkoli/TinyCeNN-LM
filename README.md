@@ -4,6 +4,13 @@
 
 TinyCeNN-LM is a small, reproducible research lab built on [`arnir0/Tiny-LLM`](https://huggingface.co/arnir0/Tiny-LLM). The upstream checkpoint is a ~13M-parameter, one-layer Llama-family causal language model pretrained on 32B FineWeb tokens. TinyCeNN-LM keeps that pretrained layer intact and adds a **causal Cellular Neural Network (CeNN) residual state core** whose weights are shared across recurrent iterations.
 
+For the **Transformer-free distilled student**, see [DISTILLATION.md](DISTILLATION.md).
+If training slows after the first 10M tokens, use the
+[optimized continuation recipe](CONTINUATION.md) and
+[Colab notebook](notebooks/TinyCeNN_Optimized_Continue_Colab.ipynb).
+They add FP32 student parameter storage, optional interface adaptation, and
+continuation from a saved data-stream position, with the same held-out benchmark.
+
 ## Why this first design?
 
 Replacing Tiny-LLM's only pretrained Transformer layer with random weights would throw away the checkpoint's learned computation. Version 0.1 therefore uses a safer experiment:
