@@ -84,6 +84,19 @@ from .smollm2_amcenn_v2 import (
     save_smollm2_amcenn_v2,
     v2_parameter_summary,
 )
+from .hf_persistence import (
+    build_model_card,
+    collect_reports,
+    install_colab_hf_upload_enhancer,
+    persist_hf_run,
+    redact_secrets,
+    utc_run_id,
+)
+
+# Every repository Colab imports tinycenn_lm before publishing. In Colab only,
+# transparently enrich the existing Hugging Face upload step with a report-backed
+# model card and a timestamped runs/<run_id>/ archive. Outside Colab this is a no-op.
+install_colab_hf_upload_enhancer()
 
 __all__ = [
     "CeNNConfig",
@@ -159,4 +172,10 @@ __all__ = [
     "save_smollm2_amcenn_v2",
     "load_smollm2_amcenn_v2_weights",
     "build_smollm2_amcenn_v2",
+    "build_model_card",
+    "collect_reports",
+    "persist_hf_run",
+    "install_colab_hf_upload_enhancer",
+    "redact_secrets",
+    "utc_run_id",
 ]
