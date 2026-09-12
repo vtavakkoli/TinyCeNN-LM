@@ -37,12 +37,7 @@ class StoryV2Config:
 
 
 class CausalStoryMemory(nn.Module):
-    """Cheap global prefix memory with no attention and no token-by-token Python loop.
-
-    For position t we compute the cumulative mean of hidden states 0..t, then pass
-    it through a small bottleneck adapter. The up projection is zero initialized,
-    so upgrading a trained Story-v1 checkpoint is exactly function preserving.
-    """
+    """Cheap global prefix memory with no attention and no token-by-token Python loop."""
 
     def __init__(self, hidden_size: int, rank: int) -> None:
         super().__init__()
@@ -66,12 +61,7 @@ class CausalStoryMemory(nn.Module):
 
 
 class StoryV2ReplacementLayer(nn.Module):
-    def __init__(
-        self,
-        cenn: nn.Module,
-        hidden_size: int,
-        story_config: StoryV2Config,
-    ) -> None:
+    def __init__(self, cenn: nn.Module, hidden_size: int, story_config: StoryV2Config) -> None:
         super().__init__()
         self.cenn = cenn
         self.story_memory = CausalStoryMemory(hidden_size, story_config.memory_rank)
@@ -104,9 +94,7 @@ class LowRankLMHeadAdapter(nn.Module):
         return getattr(self.base_head, "weight", None)
 
     def forward(self, hidden_states: Tensor) -> Tensor:
-        base_logits = self.base_head(hidden_states)
-        delta = self.up(F.silu(self.down(hidden_states)))
-        return base_logits + delta
+        return self.base_head(hidden_states) + self.up(F.silu(self.down(hidden_states)))
 
 
 def upgrade_sharded_model_to_story_v2(model: nn.Module, story_config: StoryV2Config) -> nn.Module:
@@ -128,12 +116,7 @@ def upgrade_sharded_model_to_story_v2(model: nn.Module, story_config: StoryV2Con
         raise RuntimeError("base model has no output embedding/head")
     if not isinstance(base_head, LowRankLMHeadAdapter):
         model.set_output_embeddings(
-            LowRankLMHeadAdapter(
-                base_head,
-                hidden_size=hidden_size,
-                vocab_size=vocab_size,
-                rank=story_config.head_rank,
-            )
+            LowRankLMHeadAdapter(base_head, hidden_size, vocab_size, story_config.head_rank)
         )
     model.config.use_cache = False
     if hasattr(model, "generation_config"):
@@ -144,7 +127,6 @@ def upgrade_sharded_model_to_story_v2(model: nn.Module, story_config: StoryV2Con
 def freeze_story_v2_interfaces(model: nn.Module) -> None:
     for parameter in model.parameters():
         parameter.requires_grad = False
-
     for module in model.modules():
         if isinstance(module, StoryV2ReplacementLayer):
             for parameter in module.cenn.parameters():
@@ -158,14 +140,18 @@ def freeze_story_v2_interfaces(model: nn.Module) -> None:
                 parameter.requires_grad = True
 
 
+def story_v2_router_stats(model: nn.Module) -> dict[str, Tensor]:
+    layer = next((m for m in model.modules() if isinstance(m, StoryV2ReplacementLayer)), None)
+    if layer is None or not getattr(layer.cenn, "last_router_stats", None):
+        raise RuntimeError("Story-v2 router statistics unavailable; run a forward pass first")
+    return layer.cenn.last_router_stats
+
+
 def story_v2_parameter_summary(model: nn.Module) -> dict[str, int | float]:
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     memory = sum(
-        p.numel()
-        for m in model.modules()
-        if isinstance(m, CausalStoryMemory)
-        for p in m.parameters()
+        p.numel() for m in model.modules() if isinstance(m, CausalStoryMemory) for p in m.parameters()
     )
     head_adapter = sum(
         p.numel()
@@ -188,7 +174,7 @@ def _story_v2_state_dict(model: nn.Module) -> dict[str, Tensor]:
     for name, tensor in model.state_dict().items():
         if ".cenn." in name or ".story_memory." in name:
             state[name] = tensor.detach().cpu()
-        elif ".lm_head.down." in name or ".lm_head.up." in name:
+        elif "lm_head.down." in name or "lm_head.up." in name:
             state[name] = tensor.detach().cpu()
     if not state:
         raise RuntimeError("no Story-v2 trainable state found")
@@ -229,11 +215,10 @@ def load_story_v2_weights(model: nn.Module, student_dir: str | Path) -> nn.Modul
     incompatible = model.load_state_dict(state, strict=False)
     expected = set(_story_v2_state_dict(model))
     missing = [key for key in incompatible.missing_keys if key in expected]
-    unexpected = [key for key in incompatible.unexpected_keys if key not in expected]
     if missing:
         raise RuntimeError(f"missing Story-v2 keys: {missing}")
-    if unexpected:
-        raise RuntimeError(f"unexpected Story-v2 keys: {unexpected}")
+    if incompatible.unexpected_keys:
+        raise RuntimeError(f"unexpected Story-v2 keys: {incompatible.unexpected_keys}")
     return model
 
 
@@ -257,9 +242,7 @@ def build_story_v2_student(
         kwargs["dtype"] = dtype
     model = AutoModelForCausalLM.from_pretrained(metadata["base_model"], **kwargs)
     sharded_config = ShardedMoECeNNConfig.from_dict(metadata["sharded_moe_cenn"])
-    replace_transformer_with_sharded_moe_cenn(
-        model, sharded_config, tuple(metadata["layer_indices"])
-    )
+    replace_transformer_with_sharded_moe_cenn(model, sharded_config, tuple(metadata["layer_indices"]))
     story_config = StoryV2Config.from_dict(metadata["story_v2"])
     upgrade_sharded_model_to_story_v2(model, story_config)
     load_story_v2_weights(model, student_dir)
