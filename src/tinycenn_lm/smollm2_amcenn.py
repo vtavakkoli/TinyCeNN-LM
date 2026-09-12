@@ -61,7 +61,6 @@ class PositiveSoftmaxFeatures(nn.Module):
         work = x.float() * self.scale
         projected = torch.einsum("...d,fd->...f", work, self.projection.float())
         norm = 0.5 * work.square().sum(dim=-1, keepdim=True)
-        # The clamp is only a numerical guard; the mathematical feature map is exp(log_phi).
         log_phi = (projected - norm - self.log_norm).clamp(min=-20.0, max=20.0)
         return torch.exp(log_phi)
 
@@ -112,8 +111,6 @@ class AMCeNNAttention(nn.Module):
             cos, sin = position_embeddings
             return apply_rotary_pos_emb(q, k, cos, sin)
         except Exception:
-            # Compatibility fallback across transformers versions. The model remains
-            # causal, but users should keep a current transformers release in Colab.
             return q, k
 
     def forward(
@@ -140,17 +137,14 @@ class AMCeNNAttention(nn.Module):
         ).transpose(1, 2)
         q, k = self._apply_rope(q, k, position_embeddings)
 
-        # [B,H,T,D] -> [B,T,H,F], [B,K,T,D] -> [B,T,K,F]
         phi_q = self.features(q).transpose(1, 2)
         phi_k = self.features(k).transpose(1, 2)
         values = v.transpose(1, 2).float()
 
-        # Recurrent state written at every token, then prefix-scanned causally.
         kv_write = torch.einsum("btkf,btkd->btkfd", phi_k, values)
         state_s = kv_write.cumsum(dim=1)
         state_z = phi_k.cumsum(dim=1)
 
-        # GQA: each KV head serves a contiguous group of query heads.
         state_s = state_s.repeat_interleave(self.num_key_value_groups, dim=2)
         state_z = state_z.repeat_interleave(self.num_key_value_groups, dim=2)
         numerator = torch.einsum("bthf,bthfd->bthd", phi_q, state_s)
@@ -198,11 +192,8 @@ class ShardedTop2LlamaMLP(nn.Module):
         self.last_router_stats: dict[str, Tensor] = {}
 
     def forward(self, x: Tensor) -> Tensor:
-        gate = torch.einsum("bth,esh->bt es", x, self.gate_weight).contiguous()
-        up = torch.einsum("bth,esh->bt es", x, self.up_weight).contiguous()
-        # Remove spaces introduced solely for readability in einsum labels above.
-        gate = gate.view(*x.shape[:2], self.num_shards, self.shard_inner)
-        up = up.view(*x.shape[:2], self.num_shards, self.shard_inner)
+        gate = torch.einsum("bth,esh->btes", x, self.gate_weight)
+        up = torch.einsum("bth,esh->btes", x, self.up_weight)
         hidden = F.silu(gate) * up
         shard_out = torch.einsum("btes,ehs->bteh", hidden, self.down_weight)
         dense_full = shard_out.sum(dim=2)
