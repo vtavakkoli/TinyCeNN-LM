@@ -14,7 +14,7 @@ import torch
 from datasets import load_dataset
 from transformers import AutoTokenizer
 
-from tinycenn_lm.sharded_moe import ShardedMoECeNNReplacementLayer, sharded_router_stats
+from tinycenn_lm.sharded_moe import ShardedMoECeNNReplacementLayer
 from tinycenn_lm.story import repetition_unlikelihood_loss
 from tinycenn_lm.story_v2 import (
     StoryV2Config,
@@ -23,6 +23,7 @@ from tinycenn_lm.story_v2 import (
     freeze_story_v2_interfaces,
     save_story_v2_student,
     story_v2_parameter_summary,
+    story_v2_router_stats,
 )
 
 
@@ -204,8 +205,8 @@ def main() -> None:
     scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda" and dtype == torch.float16))
     amp = (lambda: torch.autocast("cuda", dtype=dtype)) if device.type == "cuda" else nullcontext
 
-    approx_tokens_per_update = args.batch_size * args.context_length * args.grad_accum
-    total_updates = max(1, math.ceil(args.max_tokens / approx_tokens_per_update))
+    estimated_target_tokens_per_update = args.batch_size * 128 * args.grad_accum
+    total_updates = max(1, math.ceil(args.max_tokens / estimated_target_tokens_per_update))
     warmup_updates = max(1, int(total_updates * args.warmup_ratio))
 
     output_dir = Path(args.output_dir)
@@ -231,10 +232,8 @@ def main() -> None:
 
         with amp():
             out = model(input_ids=ids, attention_mask=mask, labels=labels, use_cache=False)
-            repeat_loss = repetition_unlikelihood_loss(
-                out.logits, labels, window=args.repeat_window
-            )
-            router = sharded_router_stats(model)
+            repeat_loss = repetition_unlikelihood_loss(out.logits, labels, window=args.repeat_window)
+            router = story_v2_router_stats(model)
             loss = (
                 out.loss
                 + args.repeat_weight * repeat_loss
@@ -269,7 +268,7 @@ def main() -> None:
         optimizer.zero_grad(set_to_none=True)
 
         if update == 1 or update % args.log_every == 0:
-            router = sharded_router_stats(model)
+            router = story_v2_router_stats(model)
             print(
                 f"update={update} target_tokens={seen_target_tokens:,} "
                 f"ce={last['ce']:.4f} repeat={last['repeat']:.5f} "
