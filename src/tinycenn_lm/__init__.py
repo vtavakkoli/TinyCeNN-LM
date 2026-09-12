@@ -56,6 +56,20 @@ from .story_v2 import (
     story_v2_router_stats,
     upgrade_sharded_model_to_story_v2,
 )
+from .smollm2_amcenn import (
+    DEFAULT_SMOLLM2,
+    AMCeNNAttention,
+    PositiveSoftmaxFeatures,
+    ShardedTop2LlamaMLP,
+    SmolAMCeNNConfig,
+    amcenn_parameter_summary,
+    amcenn_router_stats,
+    build_smollm2_amcenn,
+    freeze_smollm2_for_amcenn_training,
+    load_smollm2_amcenn_weights,
+    replace_smollm2_core,
+    save_smollm2_amcenn,
+)
 
 __all__ = [
     "CeNNConfig",
@@ -107,4 +121,16 @@ __all__ = [
     "load_story_v2_weights",
     "build_story_v2_student",
     "build_story_v2_from_story_v1",
+    "DEFAULT_SMOLLM2",
+    "SmolAMCeNNConfig",
+    "PositiveSoftmaxFeatures",
+    "AMCeNNAttention",
+    "ShardedTop2LlamaMLP",
+    "replace_smollm2_core",
+    "freeze_smollm2_for_amcenn_training",
+    "amcenn_router_stats",
+    "amcenn_parameter_summary",
+    "save_smollm2_amcenn",
+    "load_smollm2_amcenn_weights",
+    "build_smollm2_amcenn",
 ]
