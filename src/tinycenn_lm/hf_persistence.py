@@ -158,7 +158,6 @@ def build_model_card(
     yaml_lines.append("---")
 
     metrics = _interesting_metrics(reports)
-    metric_table = ""
     if metrics:
         lines = ["| Metric | Value |", "|---|---:|"]
         lines += [f"| `{name}` | {_format_value(value)} |" for name, value in metrics]
@@ -177,7 +176,6 @@ def build_model_card(
         "training notebook/script; unless explicitly marked as held-out evaluation, they should not be treated "
         "as publication-grade benchmark results. Generation quality can differ substantially from the base model."
     )
-
     notes = f"\n## Notes\n\n{extra_notes.strip()}\n" if extra_notes else ""
     return redact_secrets("\n".join(yaml_lines) + f"\n\n# {display_title}\n\n"
         f"Research artifact from **TinyCeNN-LM**. Architecture: `{inferred_arch}`.\n\n"
@@ -188,8 +186,8 @@ def build_model_card(
         f"- Source code: {source_repo}\n\n"
         "## Latest saved results\n\n"
         f"{metric_table}\n\n"
-        "The Hugging Face repository also keeps timestamped run artifacts under `runs/`. This preserves "
-        "training reports and run metadata independently of the temporary Colab filesystem.\n\n"
+        "The Hugging Face repository keeps timestamped run artifacts under `runs/`. This preserves training "
+        "reports, configs and run metadata independently of the temporary Colab filesystem.\n\n"
         "## Saved experiment files\n\n"
         f"{files_text}\n\n"
         "## Reproducibility\n\n"
@@ -237,8 +235,13 @@ def write_run_manifest(
 def _copy_small_artifacts(folder: Path, archive_dir: Path) -> list[str]:
     copied: list[str] = []
     for path in folder.rglob("*"):
-        if not path.is_file() or path.is_relative_to(archive_dir):
+        if not path.is_file():
             continue
+        try:
+            if path.is_relative_to(archive_dir.parent):
+                continue
+        except AttributeError:
+            pass
         if path.suffix.lower() not in _SMALL_ARTIFACT_SUFFIXES:
             continue
         if path.stat().st_size > 10 * 1024 * 1024:
@@ -255,6 +258,23 @@ def _copy_small_artifacts(folder: Path, archive_dir: Path) -> list[str]:
     return copied
 
 
+def _prepare_run_archive(folder: Path, *, repo_id: str, run_id: str, notebook: str | None = None) -> Path:
+    archive_dir = folder / ".hf_run_archive" / run_id
+    if archive_dir.exists():
+        shutil.rmtree(archive_dir)
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    copied = _copy_small_artifacts(folder, archive_dir)
+    latest = {
+        "run_id": run_id,
+        "repo_id": repo_id,
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "notebook": notebook,
+        "artifacts": copied,
+    }
+    (archive_dir / "latest_run.json").write_text(json.dumps(latest, indent=2), encoding="utf-8")
+    return archive_dir
+
+
 def persist_hf_run(
     *,
     api,
@@ -269,11 +289,7 @@ def persist_hf_run(
     commit_message: str | None = None,
     upload_model_files: bool = True,
 ) -> dict[str, Any]:
-    """Persist a completed Colab run and a timestamped result archive to Hugging Face.
-
-    The model/checkpoint folder is uploaded to repository root when upload_model_files=True.
-    Small reports/logs/configs are additionally copied to runs/<run_id>/ so later uploads do not erase history.
-    """
+    """Persist a completed Colab run and a timestamped result archive to Hugging Face."""
     from huggingface_hub import HfApi
 
     folder = Path(folder_path)
@@ -283,51 +299,108 @@ def persist_hf_run(
     client = api if api is not None else HfApi(token=token)
     client.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True)
 
-    card = build_model_card(
-        folder,
-        title=title,
-        architecture=architecture,
-        base_model=base_model,
-    )
+    card = build_model_card(folder, title=title, architecture=architecture, base_model=base_model)
     (folder / "README.md").write_text(card, encoding="utf-8")
     write_run_manifest(folder, run_id=run_id, notebook=notebook, repo_id=repo_id)
 
     if upload_model_files:
         client.upload_folder(
-            repo_id=repo_id,
-            repo_type="model",
-            folder_path=str(folder),
+            repo_id=repo_id, repo_type="model", folder_path=str(folder),
             commit_message=commit_message or f"Publish TinyCeNN run {run_id}",
+            ignore_patterns=[".hf_run_archive/**"],
         )
 
-    archive_dir = folder / ".hf_run_archive" / run_id
-    if archive_dir.exists():
-        shutil.rmtree(archive_dir)
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    copied = _copy_small_artifacts(folder, archive_dir)
-    latest = {
-        "run_id": run_id,
-        "repo_id": repo_id,
-        "created_utc": datetime.now(timezone.utc).isoformat(),
-        "notebook": notebook,
-        "artifacts": copied,
-    }
-    (archive_dir / "latest_run.json").write_text(json.dumps(latest, indent=2), encoding="utf-8")
+    archive_dir = _prepare_run_archive(folder, repo_id=repo_id, run_id=run_id, notebook=notebook)
+    latest_file = archive_dir / "latest_run.json"
     client.upload_folder(
-        repo_id=repo_id,
-        repo_type="model",
-        folder_path=str(archive_dir),
-        path_in_repo=f"runs/{run_id}",
-        commit_message=f"Archive TinyCeNN results {run_id}",
+        repo_id=repo_id, repo_type="model", folder_path=str(archive_dir),
+        path_in_repo=f"runs/{run_id}", commit_message=f"Archive TinyCeNN results {run_id}",
     )
     client.upload_file(
-        repo_id=repo_id,
-        repo_type="model",
-        path_or_fileobj=str(archive_dir / "latest_run.json"),
+        repo_id=repo_id, repo_type="model", path_or_fileobj=str(latest_file),
         path_in_repo="runs/latest_run.json",
         commit_message=f"Update latest TinyCeNN run pointer to {run_id}",
     )
-    return latest
+    return json.loads(latest_file.read_text(encoding="utf-8"))
+
+
+def _looks_like_tinycenn_folder(folder: Path) -> bool:
+    if "tinycenn" in str(folder).lower() or "smollm2-amcenn" in str(folder).lower():
+        return True
+    names = {p.name.lower() for p in folder.iterdir()} if folder.exists() and folder.is_dir() else set()
+    return any("cenn" in name or "story_v2" in name or "sharded" in name for name in names)
+
+
+def install_colab_hf_upload_enhancer() -> bool:
+    """Enhance existing notebook HfApi.upload_folder calls without duplicating notebook code.
+
+    In Colab, TinyCeNN notebooks already import tinycenn_lm before publishing. This wrapper regenerates a
+    report-backed README and archives small result files under runs/<timestamp>/ whenever a TinyCeNN checkpoint
+    folder is uploaded. Outside Colab it is a no-op.
+    """
+    if not (os.environ.get("COLAB_RELEASE_TAG") or os.environ.get("COLAB_GPU") or Path("/content").exists()):
+        return False
+    try:
+        from huggingface_hub import HfApi
+    except Exception:
+        return False
+    if getattr(HfApi.upload_folder, "_tinycenn_enhanced", False):
+        return True
+
+    original_upload_folder = HfApi.upload_folder
+    original_upload_file = HfApi.upload_file
+
+    def enhanced_upload_folder(self, *args, **kwargs):
+        folder_value = kwargs.get("folder_path")
+        repo_id = kwargs.get("repo_id")
+        repo_type = kwargs.get("repo_type", "model")
+        if folder_value is None and len(args) >= 1:
+            folder_value = args[0]
+        if repo_id is None and len(args) >= 2:
+            repo_id = args[1]
+        folder = Path(folder_value) if folder_value else None
+        should_enhance = (
+            repo_type == "model" and folder is not None and folder.exists() and folder.is_dir()
+            and repo_id and _looks_like_tinycenn_folder(folder)
+            and ".hf_run_archive" not in str(folder)
+        )
+        if not should_enhance:
+            return original_upload_folder(self, *args, **kwargs)
+
+        run_id = utc_run_id(folder.name[:24] or "run")
+        reports = collect_reports(folder)
+        architecture = _first_value(reports, ("architecture", "task"))
+        base_model = _first_value(reports, ("base_model", "teacher_model"))
+        (folder / "README.md").write_text(
+            build_model_card(folder, title=str(repo_id).split("/")[-1], architecture=architecture, base_model=base_model),
+            encoding="utf-8",
+        )
+        write_run_manifest(folder, run_id=run_id, repo_id=str(repo_id))
+        ignore = list(kwargs.get("ignore_patterns") or [])
+        if ".hf_run_archive/**" not in ignore:
+            ignore.append(".hf_run_archive/**")
+        kwargs["ignore_patterns"] = ignore
+        result = original_upload_folder(self, *args, **kwargs)
+
+        try:
+            archive_dir = _prepare_run_archive(folder, repo_id=str(repo_id), run_id=run_id)
+            original_upload_folder(
+                self, repo_id=repo_id, repo_type="model", folder_path=str(archive_dir),
+                path_in_repo=f"runs/{run_id}", commit_message=f"Archive TinyCeNN results {run_id}",
+            )
+            original_upload_file(
+                self, repo_id=repo_id, repo_type="model",
+                path_or_fileobj=str(archive_dir / "latest_run.json"),
+                path_in_repo="runs/latest_run.json",
+                commit_message=f"Update latest TinyCeNN run pointer to {run_id}",
+            )
+        except Exception as exc:
+            print(f"TinyCeNN HF result archive warning: {exc}")
+        return result
+
+    enhanced_upload_folder._tinycenn_enhanced = True
+    HfApi.upload_folder = enhanced_upload_folder
+    return True
 
 
 def fingerprint_file(path: str | Path) -> str:
