@@ -42,6 +42,20 @@ from .sharded_moe import (
     sharded_router_stats,
     warmstart_sharded_moe_from_plain_cenn,
 )
+from .story_v2 import (
+    CausalStoryMemory,
+    LowRankLMHeadAdapter,
+    StoryV2Config,
+    StoryV2ReplacementLayer,
+    build_story_v2_from_story_v1,
+    build_story_v2_student,
+    freeze_story_v2_interfaces,
+    load_story_v2_weights,
+    save_story_v2_student,
+    story_v2_parameter_summary,
+    story_v2_router_stats,
+    upgrade_sharded_model_to_story_v2,
+)
 
 __all__ = [
     "CeNNConfig",
@@ -81,4 +95,16 @@ __all__ = [
     "save_sharded_moe_student",
     "sharded_router_stats",
     "warmstart_sharded_moe_from_plain_cenn",
+    "StoryV2Config",
+    "CausalStoryMemory",
+    "StoryV2ReplacementLayer",
+    "LowRankLMHeadAdapter",
+    "upgrade_sharded_model_to_story_v2",
+    "freeze_story_v2_interfaces",
+    "story_v2_router_stats",
+    "story_v2_parameter_summary",
+    "save_story_v2_student",
+    "load_story_v2_weights",
+    "build_story_v2_student",
+    "build_story_v2_from_story_v1",
 ]
