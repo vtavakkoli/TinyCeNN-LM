@@ -70,6 +70,20 @@ from .smollm2_amcenn import (
     replace_smollm2_core,
     save_smollm2_amcenn,
 )
+from .smollm2_amcenn_v2 import (
+    AMCeNNAttentionV2,
+    AdaptivePositiveSoftmaxFeatures,
+    SmolAMCeNNV2Config,
+    build_smollm2_amcenn_v2,
+    convert_all_ffns_to_sharded_top2,
+    freeze_for_global_training,
+    freeze_for_group_calibration,
+    load_smollm2_amcenn_v2_weights,
+    replace_all_smollm2_attention,
+    replace_attention_layers,
+    save_smollm2_amcenn_v2,
+    v2_parameter_summary,
+)
 
 __all__ = [
     "CeNNConfig",
@@ -133,4 +147,16 @@ __all__ = [
     "save_smollm2_amcenn",
     "load_smollm2_amcenn_weights",
     "build_smollm2_amcenn",
+    "SmolAMCeNNV2Config",
+    "AdaptivePositiveSoftmaxFeatures",
+    "AMCeNNAttentionV2",
+    "convert_all_ffns_to_sharded_top2",
+    "replace_attention_layers",
+    "replace_all_smollm2_attention",
+    "freeze_for_group_calibration",
+    "freeze_for_global_training",
+    "v2_parameter_summary",
+    "save_smollm2_amcenn_v2",
+    "load_smollm2_amcenn_v2_weights",
+    "build_smollm2_amcenn_v2",
 ]
