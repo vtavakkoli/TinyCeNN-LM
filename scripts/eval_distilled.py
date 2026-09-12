@@ -81,13 +81,17 @@ def main() -> None:
     teacher.config.use_cache = False
     teacher.eval()
 
-    student = build_cenn_student(student_dir, device=device, dtype=dtype)
+    # Match training's parameter storage; evaluate_distillation still autocasts
+    # the forward pass. Casting the master weights before reload changes logits.
+    student_dtype = torch.float32 if report.get("training_precision") else dtype
+    student = build_cenn_student(student_dir, device=device, dtype=student_dtype)
     student.eval()
 
     eval_raw = load_dataset(
         report["dataset"],
         report["dataset_config"],
         split=dataset_split,
+        revision=report.get("dataset_revision"),
         streaming=True,
     )
     eval_rows = partition_rows(eval_raw, text_field, validation=True)
@@ -121,7 +125,10 @@ def main() -> None:
         hidden_weight=float(distill["hidden_weight"]),
     )
 
-    expected_ce = float(report["best"]["student_ce"])
+    checkpoint = report.get("checkpoint", {})
+    if checkpoint.get("available") is False:
+        raise RuntimeError("this run did not produce a valid checkpoint in this directory")
+    expected_ce = float((checkpoint.get("metrics") or report["best"])["student_ce"])
     actual_ce = float(metrics["student_ce"])
     ce_delta = abs(actual_ce - expected_ce)
     result = {

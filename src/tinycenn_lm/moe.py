@@ -244,6 +244,9 @@ def warmstart_moe_from_plain_cenn(model: nn.Module, plain_student_dir: str | Pat
             source_name = prefix + suffix
         elif any(part in target_name for part in (".cenn.cell.norm.", ".cenn.cell.neighborhood.", ".cenn.cell.gate_proj.")):
             source_name = target_name
+        elif ".cenn." not in target_name and target_name in state:
+            # v2 dense checkpoints may include adapted language interfaces.
+            source_name = target_name
         else:
             continue
         if source_name in state and state[source_name].shape == target[target_name].shape:
@@ -252,6 +255,7 @@ def warmstart_moe_from_plain_cenn(model: nn.Module, plain_student_dir: str | Pat
     if copied == 0:
         raise RuntimeError("could not map plain CeNN weights into MoE-CeNN model")
     model.load_state_dict(target, strict=False)
+    model._cenn_interface_keys = tuple(name for name in state if ".cenn." not in name)
 
 
 def moe_router_stats(model: nn.Module) -> dict[str, Tensor]:
@@ -262,7 +266,9 @@ def moe_router_stats(model: nn.Module) -> dict[str, Tensor]:
 
 
 def _moe_state_dict(model: nn.Module) -> dict[str, Tensor]:
-    state = {name: tensor.detach().cpu() for name, tensor in model.state_dict().items() if ".cenn." in name}
+    interfaces = set(getattr(model, "_cenn_interface_keys", ()))
+    state = {name: tensor.detach().cpu() for name, tensor in model.state_dict().items()
+             if ".cenn." in name or name in interfaces}
     if not state:
         raise ValueError("no MoE-CeNN weights found")
     return state
@@ -271,13 +277,15 @@ def _moe_state_dict(model: nn.Module) -> dict[str, Tensor]:
 def save_moe_cenn_student(model: nn.Module, output_dir: str | Path, *, config: MoECeNNConfig, base_model: str = DEFAULT_BASE_MODEL, layer_indices: Sequence[int] = (0,), extra_metadata: dict | None = None) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(_moe_state_dict(model), output_dir / "moe_cenn_student.pt")
+    state = _moe_state_dict(model)
+    torch.save(state, output_dir / "moe_cenn_student.pt")
     metadata = {
-        "format_version": 1,
+        "format_version": 2,
         "architecture": "moe-cenn-top2-replacement",
         "base_model": base_model,
         "layer_indices": list(layer_indices),
         "moe_cenn": config.to_dict(),
+        "state_keys": sorted(state),
     }
     if extra_metadata:
         metadata["training"] = extra_metadata
@@ -287,14 +295,17 @@ def save_moe_cenn_student(model: nn.Module, output_dir: str | Path, *, config: M
 
 def load_moe_cenn_student_weights(model: nn.Module, student_dir: str | Path, *, map_location="cpu", strict: bool = True) -> nn.Module:
     state = torch.load(Path(student_dir) / "moe_cenn_student.pt", map_location=map_location, weights_only=True)
-    incompatible = model.load_state_dict(state, strict=False)
-    expected = set(_moe_state_dict(model))
-    missing = [key for key in incompatible.missing_keys if key in expected]
-    unexpected = [key for key in incompatible.unexpected_keys if key not in expected]
+    metadata = json.loads((Path(student_dir) / "moe_student_config.json").read_text())
+    core_keys = {name for name in model.state_dict() if ".cenn." in name}
+    expected = set(metadata.get("state_keys", core_keys)) | core_keys
+    missing = sorted(expected - state.keys())
+    unexpected = sorted(state.keys() - expected | state.keys() - model.state_dict().keys())
     if strict and missing:
         raise RuntimeError(f"missing MoE-CeNN keys: {missing}")
     if strict and unexpected:
         raise RuntimeError(f"unexpected MoE-CeNN keys: {unexpected}")
+    model.load_state_dict(state, strict=False)
+    model._cenn_interface_keys = tuple(name for name in state if ".cenn." not in name)
     return model
 
 

@@ -31,6 +31,11 @@ from tinycenn_lm.moe import (
     save_moe_cenn_student,
     warmstart_moe_from_plain_cenn,
 )
+from tinycenn_lm.training import (
+    checkpoint_training_tokens,
+    stream_resume_offset,
+    training_stream_signature,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dataset", default="HuggingFaceFW/fineweb")
     p.add_argument("--dataset-config", default="sample-10BT")
     p.add_argument("--split", default="train")
+    p.add_argument("--dataset-revision", default=None)
     p.add_argument("--text-field", default="text")
     p.add_argument("--output-dir", default="checkpoints/cenn-moe-top2")
     p.add_argument("--context-length", type=int, default=256)
@@ -65,6 +71,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--hidden-weight", type=float, default=0.25)
     p.add_argument("--kl-chunk-rows", type=int, default=256)
     p.add_argument("--shuffle-buffer", type=int, default=4096)
+    p.add_argument("--train-skip-tokens", type=int, default=None)
     p.add_argument("--eval-batches", type=int, default=64)
     p.add_argument("--eval-batch-size", type=int, default=4)
     p.add_argument("--eval-every", type=int, default=250)
@@ -146,7 +153,10 @@ def eval_moe(teacher, student, batches, device, dtype, args) -> dict:
 def save_checkpoint(model, tokenizer, directory, config, args, tokens, source):
     save_moe_cenn_student(
         model, directory, config=config, base_model=args.base_model,
-        extra_metadata={"distilled": True, "tokens": tokens, "warmstart_plain": str(source)},
+        extra_metadata={"distilled": True, "tokens": tokens, "warmstart_plain": str(source),
+                        "cumulative_tokens": args.previous_training_tokens + tokens,
+                        "data_stream": {"signature": args.stream_signature,
+                                        "next_token_offset": args.stream_offset + tokens}},
     )
     tokenizer.save_pretrained(directory)
 
@@ -176,7 +186,9 @@ def main() -> None:
     teacher.config.use_cache = False
     for p in teacher.parameters(): p.requires_grad = False
 
-    student = AutoModelForCausalLM.from_pretrained(args.base_model, **load_kwargs)
+    student = AutoModelForCausalLM.from_pretrained(
+        args.base_model, attn_implementation="sdpa", dtype=torch.float32
+    )
     cfg = MoECeNNConfig(
         hidden_size=int(student.config.hidden_size), kernel_size=args.kernel_size,
         expansion=args.expansion, steps=args.steps,
@@ -187,13 +199,14 @@ def main() -> None:
     replace_transformer_with_moe_cenn(student, cfg)
     warmstart_moe_from_plain_cenn(student, warmstart)
     freeze_moe_student_interfaces(student)
-    student.to(device=device, dtype=dtype)
+    student.to(device=device)
 
     total_params = sum(p.numel() for p in student.parameters())
     trainable_params = sum(p.numel() for p in student.parameters() if p.requires_grad)
     print(f"MoE-CeNN params total={total_params:,} trainable={trainable_params:,} experts={cfg.num_experts} top_k={cfg.top_k}")
 
-    eval_raw = load_dataset(args.dataset, args.dataset_config, split=args.split, streaming=True)
+    eval_raw = load_dataset(args.dataset, args.dataset_config, split=args.split,
+                            revision=args.dataset_revision, streaming=True)
     eval_rows = partition_rows(eval_raw, args.text_field, validation=True)
     eval_batches = collect_eval_batches(eval_rows, tokenizer, args.text_field, args.context_length, args.eval_batch_size, args.eval_batches)
     fingerprint = evaluation_fingerprint(eval_batches)
@@ -203,7 +216,8 @@ def main() -> None:
         raise RuntimeError(f"benchmark fingerprint differs from plain CeNN baseline: {fingerprint} != {expected_fp}")
 
     start_metrics = eval_moe(teacher, student, eval_batches, device, dtype, args)
-    plain_ce = float(previous_report.get("best", {}).get("student_ce", start_metrics["student_ce"]))
+    plain_metrics = previous_report.get("checkpoint", {}).get("metrics") or previous_report.get("best", {})
+    plain_ce = float(plain_metrics.get("student_ce", start_metrics["student_ce"]))
     warmstart_delta = abs(start_metrics["student_ce"] - plain_ce)
     print(f"function-preserving warm start: MoE CE={start_metrics['student_ce']:.6f}, plain CE={plain_ce:.6f}, delta={warmstart_delta:.6f}")
     if warmstart_delta > args.warmstart_ce_tolerance:
@@ -211,11 +225,22 @@ def main() -> None:
 
     cold_ce = float(previous_report.get("cold_initial", {}).get("student_ce", start_metrics["student_ce"]))
     teacher_ce_reference = float(previous_report.get("cold_initial", {}).get("teacher_ce", start_metrics["teacher_ce"]))
-    previous_tokens = int(previous_report.get("cumulative_training_tokens", previous_report.get("seen_tokens", 0)))
+    metadata = json.loads((warmstart / "student_config.json").read_text())
+    previous_tokens = checkpoint_training_tokens(metadata, previous_report)
+    args.previous_training_tokens = previous_tokens
+    args.stream_signature = training_stream_signature(args, tokenizer)
+    args.stream_offset, stream_mode = stream_resume_offset(
+        metadata, previous_report, args.stream_signature, explicit_offset=args.train_skip_tokens,
+    )
+    print(f"training stream: {stream_mode}, skipping {args.stream_offset:,} tokens")
+    if stream_mode == "legacy_estimate":
+        print("Legacy checkpoint lacks an exact data cursor; prefix coverage is approximate.")
 
-    train_raw = load_dataset(args.dataset, args.dataset_config, split=args.split, streaming=True)
-    train_rows = buffered_shuffle(partition_rows(train_raw, args.text_field, validation=False), buffer_size=args.shuffle_buffer, seed=args.seed + 101)
-    batches = batch_blocks(token_blocks(train_rows, tokenizer, args.text_field, args.context_length), args.batch_size)
+    train_raw = load_dataset(args.dataset, args.dataset_config, split=args.split,
+                             revision=args.dataset_revision, streaming=True)
+    train_rows = buffered_shuffle(partition_rows(train_raw, args.text_field, validation=False), buffer_size=args.shuffle_buffer, seed=args.seed)
+    batches = batch_blocks(token_blocks(train_rows, tokenizer, args.text_field, args.context_length,
+                                        skip_tokens=args.stream_offset), args.batch_size)
 
     trainable = [p for p in student.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable, lr=args.learning_rate, weight_decay=args.weight_decay)
@@ -227,7 +252,7 @@ def main() -> None:
 
     output_dir = Path(args.output_dir); best_dir = Path(str(output_dir) + "-best")
     save_checkpoint(student, tokenizer, best_dir, cfg, args, 0, warmstart)
-    best = start_metrics; best_update = 0; seen_tokens = 0; micro = 0; update = 0
+    best = start_metrics; best_update = 0; best_tokens = 0; seen_tokens = 0; micro = 0; update = 0
     history = [{"update": 0, "tokens_this_run": 0, **start_metrics}]
     start_time = time.perf_counter(); student.train(); optimizer.zero_grad(set_to_none=True)
 
@@ -262,7 +287,7 @@ def main() -> None:
             history.append({"update": update, "tokens_this_run": seen_tokens, **metrics})
             print(f"eval={update}: CE={metrics['student_ce']:.4f} PPL={metrics['student_ppl']:.2f} teacher={metrics['teacher_ce']:.4f} expert_range={metrics['expert_min_fraction']:.3f}-{metrics['expert_max_fraction']:.3f}")
             if metrics["student_ce"] < best["student_ce"]:
-                best = metrics; best_update = update
+                best = metrics; best_update = update; best_tokens = seen_tokens
                 save_checkpoint(student, tokenizer, best_dir, cfg, args, seen_tokens, warmstart)
             student.train()
 
@@ -282,11 +307,16 @@ def main() -> None:
         "base_model_teacher": args.base_model,
         "dataset": args.dataset, "dataset_config": args.dataset_config, "dataset_split": args.split, "text_field": args.text_field,
         "evaluation": {"batches": len(eval_batches), "batch_size": args.eval_batch_size, "tokens": eval_tokens, "fingerprint_sha256": fingerprint, "eval_every_updates": args.eval_every},
-        "training_shuffle": {"method": "deterministic bounded-memory buffered shuffle", "buffer_size": args.shuffle_buffer, "seed": args.seed + 101},
+        "training_shuffle": {"method": "deterministic bounded-memory buffered shuffle", "buffer_size": args.shuffle_buffer, "seed": args.seed},
         "context_length": args.context_length,
         "previous_plain_training_tokens": previous_tokens,
         "moe_training_tokens": seen_tokens,
         "effective_cumulative_tokens": previous_tokens + seen_tokens,
+        "dataset_revision": args.dataset_revision,
+        "training_precision": {"parameters": "float32", "autocast": str(dtype)},
+        "training_stream": {"resume_mode": stream_mode, "start_token_offset": args.stream_offset,
+                            "next_token_offset": args.stream_offset + seen_tokens,
+                            "signature": args.stream_signature},
         "parameters": {"total": total_params, "trainable": trainable_params, "trainable_percent": 100*trainable_params/max(total_params,1)},
         "moe": cfg.to_dict(),
         "active_experts_per_token": cfg.top_k,
@@ -301,9 +331,13 @@ def main() -> None:
         "peak_vram_gib": torch.cuda.max_memory_allocated()/1024**3 if device.type == "cuda" else 0.0,
         "eval_history": history,
     }
-    text = json.dumps(report, indent=2)
-    output_dir.mkdir(parents=True, exist_ok=True); (output_dir/"moe_distillation_report.json").write_text(text)
-    (best_dir/"moe_distillation_report.json").write_text(text)
+    for directory, kind, tokens, metrics in (
+        (output_dir, "final", seen_tokens, final), (best_dir, "best", best_tokens, best),
+    ):
+        report["checkpoint"] = {"kind": kind, "tokens_this_run": tokens,
+                                "cumulative_training_tokens": previous_tokens + tokens,
+                                "metrics": metrics}
+        (directory / "moe_distillation_report.json").write_text(json.dumps(report, indent=2))
     print("="*88)
     print(f"MOE-CENN: {status.upper()} | CE {start_metrics['student_ce']:.4f} -> {best['student_ce']:.4f} | teacher={best['teacher_ce']:.4f} | gap recovery={100*recovery:.2f}%")
     print(f"best checkpoint: {best_dir}")

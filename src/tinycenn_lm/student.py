@@ -83,14 +83,30 @@ def replace_transformer_with_cenn(
     return model
 
 
-def freeze_student_interfaces(model: nn.Module) -> None:
-    """Freeze copied pretrained interfaces and train only the CeNN replacement core."""
+def freeze_student_interfaces(model: nn.Module, train_interfaces: str = "none") -> None:
+    """Train the core and optionally adapt pretrained interfaces after distillation.
+
+    ``norm`` trains the final normalization; ``all`` also trains the embeddings
+    and output head. The default retains the original core-only experiment.
+    """
+    if train_interfaces not in {"none", "norm", "all"}:
+        raise ValueError("train_interfaces must be none, norm, or all")
     for parameter in model.parameters():
         parameter.requires_grad = False
     for module in model.modules():
         if isinstance(module, CeNNReplacementLayer):
             for parameter in module.parameters():
                 parameter.requires_grad = True
+    if train_interfaces != "none":
+        norm = getattr(getattr(model, "model", None), "norm", None)
+        if not isinstance(norm, nn.Module):
+            raise ValueError("student has no supported final model.norm")
+        norm.requires_grad_(True)
+    if train_interfaces == "all":
+        for interface in (model.get_input_embeddings(), model.get_output_embeddings()):
+            if interface is None:
+                raise ValueError("student must expose input and output embeddings")
+            interface.requires_grad_(True)
 
 
 def student_parameter_summary(model: nn.Module) -> dict[str, int | float]:
@@ -104,11 +120,15 @@ def student_parameter_summary(model: nn.Module) -> dict[str, int | float]:
 
 
 def _student_state_dict(model: nn.Module) -> dict[str, Tensor]:
+    # Keep interfaces loaded from a v2 checkpoint even when they are frozen in a
+    # later stage. Otherwise re-saving silently reverts them to the base model.
+    extra_keys = set(getattr(model, "_cenn_interface_keys", ()))
+    extra_keys.update(name for name, p in model.named_parameters() if p.requires_grad)
     state: dict[str, Tensor] = {}
     for name, tensor in model.state_dict().items():
-        if ".cenn." in name:
+        if ".cenn." in name or name in extra_keys:
             state[name] = tensor.detach().cpu()
-    if not state:
+    if not any(".cenn." in name for name in state):
         raise ValueError("no CeNN replacement weights found")
     return state
 
@@ -124,13 +144,15 @@ def save_cenn_student(
 ) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(_student_state_dict(model), output_dir / "cenn_student.pt")
+    state = _student_state_dict(model)
+    torch.save(state, output_dir / "cenn_student.pt")
     metadata = {
-        "format_version": 1,
+        "format_version": 2,
         "architecture": "cenn-only-replacement",
         "base_model": base_model,
         "layer_indices": list(layer_indices),
         "cenn": config.to_dict(),
+        "state_keys": sorted(state),
     }
     if extra_metadata:
         metadata["training"] = extra_metadata
@@ -153,14 +175,17 @@ def load_cenn_student_weights(
         map_location=map_location,
         weights_only=True,
     )
-    incompatible = model.load_state_dict(state, strict=False)
-    expected = set(_student_state_dict(model))
-    missing = [key for key in incompatible.missing_keys if key in expected]
-    unexpected = [key for key in incompatible.unexpected_keys if key not in expected]
+    metadata = json.loads((student_dir / "student_config.json").read_text())
+    core_keys = {key for key in model.state_dict() if ".cenn." in key}
+    expected = set(metadata.get("state_keys", core_keys)) | core_keys
+    missing = sorted(expected - state.keys())
+    unexpected = sorted(state.keys() - expected | state.keys() - model.state_dict().keys())
     if strict and missing:
         raise RuntimeError(f"missing CeNN student keys: {missing}")
     if strict and unexpected:
         raise RuntimeError(f"unexpected CeNN student keys: {unexpected}")
+    model.load_state_dict(state, strict=False)
+    model._cenn_interface_keys = tuple(key for key in state if ".cenn." not in key)
     return model
 
 

@@ -1,5 +1,10 @@
 # TinyCeNN-LM on Google Colab
 
+**Continuing a dense CeNN student that plateaued after 10M tokens?** Use
+[TinyCeNN_Optimized_Continue_Colab.ipynb](notebooks/TinyCeNN_Optimized_Continue_Colab.ipynb)
+and the [continuation guide](CONTINUATION.md). This is the Transformer-free
+distillation path; the original adapter notebook below retains the Transformer.
+
 The ready-to-run notebook is:
 
 `notebooks/TinyCeNN_LM_Colab.ipynb`
