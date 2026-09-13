@@ -96,8 +96,9 @@ def _upload_live_required(
     run_id: str,
     output_dir: Path | None,
     log_file: Path,
+    include_checkpoint: bool = True,
 ) -> None:
-    """Persist live log, small reports, and any checkpoint files already emitted."""
+    """Persist the live log and reports, optionally mirroring checkpoint files."""
     if log_file.exists():
         clean_log = log_file.with_name("train_redacted.log")
         clean_log.write_text(
@@ -145,8 +146,12 @@ def _upload_live_required(
             label=f"artifact upload: {rel.as_posix()}",
         )
 
-    # Mandatory periodic checkpoint mirror. If a trainer has emitted weights/configs,
-    # keep them remotely during the run instead of waiting for Colab to finish.
+    if not include_checkpoint:
+        return
+
+    # Mandatory periodic checkpoint mirror. This is disabled when the output
+    # directory already existed before the run, because otherwise stale weights from
+    # an earlier execution can trigger a large upload unrelated to the current run.
     checkpoint_files = [
         p for p in output_dir.rglob("*")
         if p.is_file()
@@ -193,10 +198,11 @@ def install_colab_training_backup(*, interval_seconds: int = 180) -> bool:
     Every ``subprocess.run([... train_*.py ...])`` call in Colab is converted to a
     line-streaming ``Popen`` execution. Before the child process starts, a valid
     Hugging Face login and a writable private ``TinyCeNN-LM-Colab-Backups`` repo are
-    required. Live logs and any checkpoint artifacts already written are mirrored
-    periodically. If a mandatory sync fails after retries, training is terminated so
-    a long run cannot silently continue without remote protection. The final status
-    and complete checkpoint folder must also upload successfully.
+    required. Live logs and reports are mirrored periodically, along with checkpoints
+    when the output directory is new for the current run. If a mandatory sync fails
+    after retries, training is terminated. A successful run must finish by uploading
+    its complete checkpoint. A failed trainer still uploads its log/status promptly,
+    but does not block on a large or stale checkpoint directory.
     """
     if not (os.environ.get("COLAB_RELEASE_TAG") or os.environ.get("COLAB_GPU") or Path("/content").exists()):
         return False
@@ -228,12 +234,14 @@ def install_colab_training_backup(*, interval_seconds: int = 180) -> bool:
         script = training_script_name(cmd)
         run_id = utc_run_id(script[:32])
         output_dir = output_dir_from_command(cmd, cwd=cwd)
+        output_preexisting = bool(output_dir is not None and output_dir.exists())
         work_root = Path(cwd).resolve() if cwd is not None else Path.cwd().resolve()
         live_root = work_root / ".colab_live_backup" / run_id
         live_root.mkdir(parents=True, exist_ok=True)
         log_file = live_root / "train.log"
         meta_file = live_root / "run_status.json"
         metadata = _backup_metadata(cmd, output_dir, run_id)
+        metadata["output_dir_preexisting"] = output_preexisting
         meta_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
         # Mandatory preflight. Do not spend GPU time unless the remote safety target
@@ -283,6 +291,12 @@ def install_colab_training_backup(*, interval_seconds: int = 180) -> bool:
         print(f"[TinyCeNN][COMMAND] {command_text}", flush=True)
         if output_dir is not None:
             print(f"[TinyCeNN][OUTPUT] {output_dir}", flush=True)
+        if output_preexisting:
+            print(
+                "[TinyCeNN][BACKUP] output directory already exists; periodic backup "
+                "will save logs/reports only and avoid re-uploading stale checkpoint files.",
+                flush=True,
+            )
         print(f"[TinyCeNN][LOCAL LOG] {log_file}", flush=True)
         print(
             f"[TinyCeNN][BACKUP REQUIRED] "
@@ -326,6 +340,7 @@ def install_colab_training_backup(*, interval_seconds: int = 180) -> bool:
                             run_id=run_id,
                             output_dir=output_dir,
                             log_file=log_file,
+                            include_checkpoint=not output_preexisting,
                         )
                         print(
                             f"[TinyCeNN][BACKUP OK] live state persisted at "
@@ -379,14 +394,16 @@ def install_colab_training_backup(*, interval_seconds: int = 180) -> bool:
         metadata["finished_utc"] = datetime.now(timezone.utc).isoformat()
         meta_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
-        # Final backup is mandatory even when the trainer itself failed: preserve the
-        # complete log and whatever checkpoint/report data was produced before exit.
+        # Always preserve the run's log, small reports and final status. On failure,
+        # do not upload the checkpoint directory: it may be a stale fixed-name folder
+        # from an earlier run and was the source of long post-crash Colab hangs.
         _upload_live_required(
             api,
             repo_id=backup_repo,
             run_id=run_id,
             output_dir=output_dir,
             log_file=log_file,
+            include_checkpoint=False,
         )
         _retry_required(
             lambda: api.upload_file(
@@ -398,7 +415,9 @@ def install_colab_training_backup(*, interval_seconds: int = 180) -> bool:
             ),
             label="final status upload",
         )
-        if output_dir is not None and output_dir.exists():
+
+        if returncode == 0 and output_dir is not None and output_dir.exists():
+            print("[TinyCeNN][BACKUP] uploading successful final checkpoint...", flush=True)
             _retry_required(
                 lambda: api.upload_folder(
                     repo_id=backup_repo,
@@ -409,6 +428,11 @@ def install_colab_training_backup(*, interval_seconds: int = 180) -> bool:
                     commit_message=f"Final checkpoint backup {run_id}",
                 ),
                 label="final checkpoint upload",
+            )
+        elif returncode != 0:
+            print(
+                "[TinyCeNN][BACKUP] trainer failed; log/status backed up, large checkpoint upload skipped.",
+                flush=True,
             )
 
         print("-" * 88, flush=True)
