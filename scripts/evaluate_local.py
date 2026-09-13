@@ -83,11 +83,32 @@ def load_training_report(root: Path) -> tuple[str | None, dict | None]:
         "story_training_report.json",
         "story_v2_training_report.json",
     ]
-    for name in candidates:
-        path = root / name
-        if path.exists():
-            return name, json.loads(path.read_text(encoding="utf-8"))
+    search_roots = [root]
+    if root.name == "model-best":
+        search_roots.append(root.parent / "model")
+    for search_root in search_roots:
+        for name in candidates:
+            path = search_root / name
+            if path.exists():
+                label = name if search_root == root else f"../model/{name}"
+                return label, json.loads(path.read_text(encoding="utf-8"))
     return None, None
+
+
+def load_tokenizer(root: Path, model_key: str):
+    try:
+        return AutoTokenizer.from_pretrained(root, use_fast=True), str(root)
+    except Exception:
+        if model_key != "tinycenn-lm":
+            raise
+        config_path = root / "cenn_config.json"
+        if not config_path.exists():
+            raise
+        metadata = json.loads(config_path.read_text(encoding="utf-8"))
+        base_model = metadata.get("base_model")
+        if not base_model:
+            raise RuntimeError(f"missing base_model in {config_path}")
+        return AutoTokenizer.from_pretrained(base_model, use_fast=True), str(base_model)
 
 
 def main() -> None:
@@ -102,7 +123,7 @@ def main() -> None:
     model, structure = build_model(args.model, root, device, dtype)
     model.eval()
 
-    tokenizer = AutoTokenizer.from_pretrained(root, use_fast=True)
+    tokenizer, tokenizer_source = load_tokenizer(root, args.model)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -144,6 +165,7 @@ def main() -> None:
         "model_dir": str(root),
         "device": str(device),
         "dtype": str(dtype),
+        "tokenizer_source": tokenizer_source,
         "sanity_loss": loss,
         "sanity_perplexity": math.exp(min(loss, 20.0)),
         "generated_tokens": int(generated.shape[1]) - input_len,
