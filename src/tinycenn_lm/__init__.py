@@ -104,11 +104,13 @@ from .colab_live_backup import (
     is_tinycenn_training_command,
     output_dir_from_command,
 )
+from .direct_colab_backup import install_direct_training_backup
 
-# Every repository Colab imports tinycenn_lm before training/publishing. In Colab only,
-# enable live private backups of train_*.py runs and enrich final model uploads.
-# Outside Colab both installers are no-ops.
+# In Colab, make Hugging Face backup mandatory. The parent notebook wrapper handles
+# normal subprocess-launched trainers. A trainer-side fallback covers notebooks that
+# launch train_*.py before the notebook kernel imports tinycenn_lm.
 install_colab_training_backup()
+install_direct_training_backup()
 install_colab_hf_upload_enhancer()
 
 __all__ = [
@@ -137,6 +139,6 @@ __all__ = [
     "freeze_for_group_calibration", "freeze_for_global_training", "v2_parameter_summary",
     "save_smollm2_amcenn_v2", "load_smollm2_amcenn_v2_weights", "build_smollm2_amcenn_v2",
     "build_model_card", "collect_reports", "persist_hf_run", "install_colab_hf_upload_enhancer",
-    "redact_secrets", "utc_run_id", "install_colab_training_backup", "is_tinycenn_training_command",
-    "output_dir_from_command",
+    "redact_secrets", "utc_run_id", "install_colab_training_backup", "install_direct_training_backup",
+    "is_tinycenn_training_command", "output_dir_from_command",
 ]
