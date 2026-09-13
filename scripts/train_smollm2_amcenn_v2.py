@@ -142,7 +142,10 @@ def capture_teacher_attention_io(teacher, ids: torch.Tensor, layer_indices: list
         handles.append(module.register_forward_hook(post_hook, with_kwargs=True))
 
     try:
-        with torch.inference_mode(), amp():
+        # Use no_grad rather than inference_mode: captured teacher activations are
+        # later consumed as constants by trainable student modules. Inference tensors
+        # cannot be saved for backward by those student operations.
+        with torch.no_grad(), amp():
             teacher(input_ids=ids, use_cache=False)
     finally:
         for handle in handles:
@@ -347,7 +350,9 @@ def main() -> None:
             stop_reason = "runtime_budget"
             break
         ids = next(batch_iter).to(device, non_blocking=True)
-        with torch.inference_mode(), amp():
+        # Teacher outputs participate as constants in losses that backpropagate through
+        # the student. no_grad keeps them autograd-safe while avoiding teacher grads.
+        with torch.no_grad(), amp():
             t_out = teacher(input_ids=ids, use_cache=False, output_hidden_states=True, return_dict=True)
         with amp():
             s_out = student(
