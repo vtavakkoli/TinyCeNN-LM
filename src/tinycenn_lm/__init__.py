@@ -1,3 +1,10 @@
+from .live_console import configure_live_console
+
+# Configure the current process before importing model modules. Every train_*.py
+# script imports tinycenn_lm, so notebook-launched trainers inherit immediate,
+# line-buffered stdout/stderr even when the notebook uses subprocess.run(...).
+configure_live_console()
+
 from .cenn import CeNNConfig, FastCeNNCore
 from .modeling import (
     DEFAULT_BASE_MODEL,
@@ -105,6 +112,7 @@ install_colab_training_backup()
 install_colab_hf_upload_enhancer()
 
 __all__ = [
+    "configure_live_console",
     "CeNNConfig", "FastCeNNCore", "DEFAULT_BASE_MODEL", "HybridDecoderLayer",
     "build_from_adapter", "freeze_for_adapter_training", "inject_cenn", "load_adapter",
     "save_adapter", "trainable_parameter_summary", "CeNNReplacementLayer", "build_cenn_student",
