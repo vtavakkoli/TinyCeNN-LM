@@ -27,24 +27,58 @@ def _training_script_name() -> str | None:
     return None
 
 
+def _candidate_parent_roots(root: Path) -> list[Path]:
+    """Return likely repository roots used by notebook-side backup wrappers."""
+    candidates = [root.resolve()]
+
+    # A trainer is normally /content/TinyCeNN-LM/scripts/train_*.py. Deriving the
+    # repository from argv makes detection independent of the notebook's cwd.
+    try:
+        script_path = Path(sys.argv[0]).resolve()
+        if script_path.parent.name == "scripts":
+            candidates.append(script_path.parent.parent)
+    except Exception:
+        pass
+
+    # Older notebook wrappers used this fixed Colab repository path.
+    candidates.append(Path("/content/TinyCeNN-LM"))
+
+    configured = os.environ.get("TINYCENN_PARENT_BACKUP_ROOT")
+    if configured:
+        candidates.append(Path(configured))
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate.resolve())
+        if key not in seen:
+            seen.add(key)
+            unique.append(candidate.resolve())
+    return unique
+
+
 def _parent_backup_is_active(script: str, root: Path) -> bool:
     """Detect a recent parent-wrapper run so the child does not duplicate uploads."""
-    backup_root = root / ".colab_live_backup"
-    if not backup_root.exists():
-        return False
+    if os.environ.get("TINYCENN_PARENT_BACKUP_ACTIVE") == "1":
+        return True
+
     now = time.time()
-    for meta in backup_root.glob("*/run_status.json"):
-        try:
-            if now - meta.stat().st_mtime > 10 * 60:
-                continue
-            data = json.loads(meta.read_text(encoding="utf-8"))
-            if data.get("status") != "running":
-                continue
-            command = " ".join(str(x) for x in data.get("command", []))
-            if script in command:
-                return True
-        except Exception:
+    for candidate in _candidate_parent_roots(root):
+        backup_root = candidate / ".colab_live_backup"
+        if not backup_root.exists():
             continue
+        for meta in backup_root.glob("*/run_status.json"):
+            try:
+                if now - meta.stat().st_mtime > 10 * 60:
+                    continue
+                data = json.loads(meta.read_text(encoding="utf-8"))
+                if data.get("status") != "running":
+                    continue
+                command = " ".join(str(x) for x in data.get("command", []))
+                if script in command:
+                    return True
+            except Exception:
+                continue
     return False
 
 
@@ -114,6 +148,7 @@ def install_direct_training_backup(*, interval_seconds: int = 180) -> bool:
 
     run_id = utc_run_id(f"{script}-direct"[:32])
     output_dir = output_dir_from_command(sys.argv, cwd=root)
+    output_preexisting = bool(output_dir is not None and output_dir.exists())
     live_root = root / ".colab_live_backup" / run_id
     live_root.mkdir(parents=True, exist_ok=True)
     log_path = live_root / "train.log"
@@ -123,6 +158,7 @@ def install_direct_training_backup(*, interval_seconds: int = 180) -> bool:
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "command": [redact_secrets(str(x)) for x in sys.argv],
         "output_dir": str(output_dir) if output_dir else None,
+        "output_dir_preexisting": output_preexisting,
         "status": "running",
         "backup_policy": "mandatory-fail-closed-direct-trainer-fallback",
     }
@@ -152,6 +188,12 @@ def install_direct_training_backup(*, interval_seconds: int = 180) -> bool:
         "process exits if backup cannot be persisted after retries",
         flush=True,
     )
+    if output_preexisting:
+        print(
+            "[TinyCeNN][BACKUP][DIRECT] output directory already existed; periodic "
+            "checkpoint mirroring is disabled to avoid uploading stale files.",
+            flush=True,
+        )
 
     stop_event = threading.Event()
     started = time.monotonic()
@@ -165,6 +207,7 @@ def install_direct_training_backup(*, interval_seconds: int = 180) -> bool:
                     run_id=run_id,
                     output_dir=output_dir,
                     log_file=log_path,
+                    include_checkpoint=not output_preexisting,
                 )
                 print("[TinyCeNN][BACKUP OK][DIRECT] live state persisted.", flush=True)
             except Exception as exc:
@@ -185,12 +228,15 @@ def install_direct_training_backup(*, interval_seconds: int = 180) -> bool:
         metadata["elapsed_seconds"] = time.monotonic() - started
         meta_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         try:
+            # The explicit final upload below is the only full-folder upload here.
+            # This avoids sending the same checkpoint twice at process exit.
             _upload_live_required(
                 api,
                 repo_id=repo_id,
                 run_id=run_id,
                 output_dir=output_dir,
                 log_file=log_path,
+                include_checkpoint=False,
             )
             _retry_required(
                 lambda: api.upload_file(
