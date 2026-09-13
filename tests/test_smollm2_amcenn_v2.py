@@ -1,8 +1,10 @@
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import torch
 from torch import nn
 
+from scripts.train_smollm2_amcenn_v2 import capture_teacher_attention_io
 from tinycenn_lm.smollm2_amcenn_v2 import (
     AMCeNNAttentionV2,
     AdaptivePositiveSoftmaxFeatures,
@@ -18,6 +20,38 @@ class DummyAttention(nn.Module):
         self.k_proj = nn.Linear(hidden, kv_heads * head_dim, bias=False)
         self.v_proj = nn.Linear(hidden, kv_heads * head_dim, bias=False)
         self.o_proj = nn.Linear(heads * head_dim, hidden, bias=False)
+
+
+class DummyTeacherAttention(nn.Module):
+    def __init__(self, hidden: int):
+        super().__init__()
+        self.proj = nn.Linear(hidden, hidden, bias=False)
+
+    def forward(self, hidden_states, **kwargs):
+        return (self.proj(hidden_states), None)
+
+
+class DummyTeacherLayer(nn.Module):
+    def __init__(self, hidden: int):
+        super().__init__()
+        self.self_attn = DummyTeacherAttention(hidden)
+
+
+class DummyTeacherBackbone(nn.Module):
+    def __init__(self, hidden: int):
+        super().__init__()
+        self.layers = nn.ModuleList([DummyTeacherLayer(hidden)])
+
+
+class DummyTeacher(nn.Module):
+    def __init__(self, vocab: int = 32, hidden: int = 16):
+        super().__init__()
+        self.embed = nn.Embedding(vocab, hidden)
+        self.model = DummyTeacherBackbone(hidden)
+
+    def forward(self, input_ids, use_cache=False):
+        hidden = self.embed(input_ids)
+        return self.model.layers[0].self_attn(hidden, use_cache=use_cache)
 
 
 def model_cfg(hidden=16, inner=32, heads=4, kv_heads=2):
@@ -79,6 +113,31 @@ def test_amcenn_v2_is_causal():
     y2, weights2 = module(changed, use_cache=False)
     torch.testing.assert_close(y1[:, :7], y2[:, :7], rtol=1e-5, atol=1e-6)
     assert weights1 is None and weights2 is None
+
+
+def test_teacher_capture_can_feed_trainable_student_backward():
+    """Captured teacher tensors must be normal no-grad tensors, not inference tensors."""
+    torch.manual_seed(23)
+    teacher = DummyTeacher()
+    teacher.eval()
+    for param in teacher.parameters():
+        param.requires_grad = False
+
+    ids = torch.randint(0, 32, (2, 6))
+    captures = capture_teacher_attention_io(teacher, ids, [0], nullcontext)
+    hidden = captures[0]["hidden"]
+    target = captures[0]["target"]
+
+    assert not torch.is_inference(hidden)
+    assert not torch.is_inference(target)
+    assert not hidden.requires_grad
+    assert not target.requires_grad
+
+    student = nn.Linear(hidden.shape[-1], target.shape[-1], bias=False)
+    loss = (student(hidden) - target).square().mean()
+    loss.backward()
+    assert student.weight.grad is not None
+    assert torch.isfinite(student.weight.grad).all()
 
 
 def test_v2_config_rejects_odd_antithetic_feature_count():
