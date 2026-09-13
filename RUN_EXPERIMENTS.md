@@ -22,6 +22,28 @@ result/<model_name>/
 └── rigorous_evaluation.json# only when the rigorous evaluator is available
 ```
 
+## Live status in Colab
+
+All repository `train_*.py` commands now use immediate line-buffered output. Existing notebook cells can keep using `subprocess.run(cmd, check=True)`; TinyCeNN automatically makes the child Python process unbuffered and, when the notebook has imported `tinycenn_lm`, streams stdout and stderr through the Colab cell with explicit status markers.
+
+A typical training cell now displays output continuously like this:
+
+```text
+[TinyCeNN][START] train_smollm2_amcenn_v2
+[TinyCeNN][COMMAND] python .../train_smollm2_amcenn_v2.py ...
+[TinyCeNN][OUTPUT] /content/TinyCeNN-LM/checkpoints/smollm2-amcenn-top2-v2
+[TinyCeNN][LIVE] streaming training output...
+[TinyCeNN][PROCESS START] train_smollm2_amcenn_v2
+device=cuda dtype=torch.float16
+...
+calibration ...
+...
+[TinyCeNN][PROCESS DONE] train_smollm2_amcenn_v2 completed in 42m 18s
+[TinyCeNN][DONE] train_smollm2_amcenn_v2 completed in 42m 20s
+```
+
+If training raises an uncaught exception, the cell prints `PROCESS FAILED` / `FAILED` before propagating the error. A local live log is also written below `.colab_live_backup/<run_id>/train.log`. If a Hugging Face token is configured, the existing private live backup continues to run; missing Hub credentials no longer disable live console logging.
+
 ## One command per notebook
 
 | Notebook | Python command |
