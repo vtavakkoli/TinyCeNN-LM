@@ -8,7 +8,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .hf_persistence import redact_secrets, utc_run_id
 
@@ -55,51 +55,116 @@ def _small_files(folder: Path) -> list[Path]:
         return []
     return [
         p for p in folder.rglob("*")
-        if p.is_file() and p.suffix.lower() in _SMALL_SUFFIXES and p.stat().st_size <= 10 * 1024 * 1024
+        if p.is_file()
+        and p.suffix.lower() in _SMALL_SUFFIXES
+        and p.stat().st_size <= 10 * 1024 * 1024
         and ".hf_run_archive" not in p.parts
+        and ".hf_live_redacted" not in p.parts
     ]
 
 
-def _safe_upload_live(api, *, repo_id: str, run_id: str, output_dir: Path | None, log_file: Path) -> None:
-    try:
-        if log_file.exists():
-            clean_log = log_file.with_name("train_redacted.log")
-            clean_log.write_text(
-                redact_secrets(log_file.read_text(encoding="utf-8", errors="replace")),
-                encoding="utf-8",
+def _retry_required(
+    action: Callable[[], Any],
+    *,
+    label: str,
+    attempts: int = 3,
+    delay_seconds: float = 5.0,
+) -> Any:
+    """Run one mandatory Hugging Face operation with bounded retries."""
+    last_error: Exception | None = None
+    for attempt in range(1, max(attempts, 1) + 1):
+        try:
+            return action()
+        except Exception as exc:  # network/API failures must fail closed after retries
+            last_error = exc
+            print(
+                f"[TinyCeNN][BACKUP] {label} failed "
+                f"(attempt {attempt}/{attempts}): {exc}",
+                flush=True,
             )
-            api.upload_file(
+            if attempt < attempts:
+                time.sleep(delay_seconds)
+    raise RuntimeError(
+        f"Mandatory Hugging Face backup failed during {label} after {attempts} attempts"
+    ) from last_error
+
+
+def _upload_live_required(
+    api,
+    *,
+    repo_id: str,
+    run_id: str,
+    output_dir: Path | None,
+    log_file: Path,
+) -> None:
+    """Persist live log, small reports, and any checkpoint files already emitted."""
+    if log_file.exists():
+        clean_log = log_file.with_name("train_redacted.log")
+        clean_log.write_text(
+            redact_secrets(log_file.read_text(encoding="utf-8", errors="replace")),
+            encoding="utf-8",
+        )
+        _retry_required(
+            lambda: api.upload_file(
                 repo_id=repo_id,
                 repo_type="model",
                 path_or_fileobj=str(clean_log),
                 path_in_repo=f"runs/{run_id}/train.log",
                 commit_message=f"Live backup {run_id}",
+            ),
+            label="live log upload",
+        )
+
+    if output_dir is None or not output_dir.exists():
+        return
+
+    # Upload small human-readable artifacts separately after redaction.
+    for path in _small_files(output_dir):
+        rel = path.relative_to(output_dir)
+        upload_path = path
+        try:
+            clean_dir = output_dir / ".hf_live_redacted"
+            dst = clean_dir / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(
+                redact_secrets(path.read_text(encoding="utf-8", errors="replace")),
+                encoding="utf-8",
             )
-        if output_dir is not None:
-            for path in _small_files(output_dir):
-                rel = path.relative_to(output_dir)
-                upload_path = path
-                if path.suffix.lower() in {".txt", ".md", ".log", ".json", ".jsonl", ".yaml", ".yml", ".csv"}:
-                    try:
-                        clean_dir = output_dir / ".hf_live_redacted"
-                        dst = clean_dir / rel
-                        dst.parent.mkdir(parents=True, exist_ok=True)
-                        dst.write_text(
-                            redact_secrets(path.read_text(encoding="utf-8", errors="replace")),
-                            encoding="utf-8",
-                        )
-                        upload_path = dst
-                    except Exception:
-                        upload_path = path
-                api.upload_file(
-                    repo_id=repo_id,
-                    repo_type="model",
-                    path_or_fileobj=str(upload_path),
-                    path_in_repo=f"runs/{run_id}/artifacts/{rel.as_posix()}",
-                    commit_message=f"Live results {run_id}",
-                )
-    except Exception as exc:
-        print(f"[TinyCeNN][BACKUP] warning: {exc}", flush=True)
+            upload_path = dst
+        except Exception:
+            upload_path = path
+
+        _retry_required(
+            lambda p=upload_path, r=rel: api.upload_file(
+                repo_id=repo_id,
+                repo_type="model",
+                path_or_fileobj=str(p),
+                path_in_repo=f"runs/{run_id}/artifacts/{r.as_posix()}",
+                commit_message=f"Live results {run_id}",
+            ),
+            label=f"artifact upload: {rel.as_posix()}",
+        )
+
+    # Mandatory periodic checkpoint mirror. If a trainer has emitted weights/configs,
+    # keep them remotely during the run instead of waiting for Colab to finish.
+    checkpoint_files = [
+        p for p in output_dir.rglob("*")
+        if p.is_file()
+        and ".hf_run_archive" not in p.parts
+        and ".hf_live_redacted" not in p.parts
+    ]
+    if checkpoint_files:
+        _retry_required(
+            lambda: api.upload_folder(
+                repo_id=repo_id,
+                repo_type="model",
+                folder_path=str(output_dir),
+                path_in_repo=f"runs/{run_id}/checkpoint",
+                ignore_patterns=[".hf_run_archive/**", ".hf_live_redacted/**"],
+                commit_message=f"Live checkpoint backup {run_id}",
+            ),
+            label="live checkpoint mirror",
+        )
 
 
 def _backup_metadata(cmd, output_dir: Path | None, run_id: str) -> dict[str, Any]:
@@ -109,6 +174,7 @@ def _backup_metadata(cmd, output_dir: Path | None, run_id: str) -> dict[str, Any
         "command": [redact_secrets(str(x)) for x in cmd],
         "output_dir": str(output_dir) if output_dir else None,
         "status": "running",
+        "backup_policy": "mandatory-fail-closed",
     }
 
 
@@ -122,16 +188,15 @@ def _format_elapsed(seconds: float) -> str:
 
 
 def install_colab_training_backup(*, interval_seconds: int = 180) -> bool:
-    """Stream every TinyCeNN Colab training process and optionally back it up.
+    """Stream TinyCeNN Colab training and require a private Hugging Face backup.
 
-    Existing notebooks use ``subprocess.run([... train_*.py ...])``. In Colab this
-    wrapper converts those calls to a line-streaming ``Popen`` execution so trainer
-    metrics are visible immediately. The child receives ``PYTHONUNBUFFERED=1`` and
-    Colab prints explicit START/LIVE/DONE/FAILED status markers.
-
-    If a Hugging Face token is available, the previous private live-backup behavior
-    remains enabled. Missing/invalid Hub credentials no longer disable live console
-    streaming; only the backup part is skipped.
+    Every ``subprocess.run([... train_*.py ...])`` call in Colab is converted to a
+    line-streaming ``Popen`` execution. Before the child process starts, a valid
+    Hugging Face login and a writable private ``TinyCeNN-LM-Colab-Backups`` repo are
+    required. Live logs and any checkpoint artifacts already written are mirrored
+    periodically. If a mandatory sync fails after retries, training is terminated so
+    a long run cannot silently continue without remote protection. The final status
+    and complete checkpoint folder must also upload successfully.
     """
     if not (os.environ.get("COLAB_RELEASE_TAG") or os.environ.get("COLAB_GPU") or Path("/content").exists()):
         return False
@@ -171,33 +236,46 @@ def install_colab_training_backup(*, interval_seconds: int = 180) -> bool:
         metadata = _backup_metadata(cmd, output_dir, run_id)
         meta_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
-        api = None
-        backup_repo = None
+        # Mandatory preflight. Do not spend GPU time unless the remote safety target
+        # is authenticated, private, writable, and has accepted the run metadata.
         try:
             from huggingface_hub import HfApi, get_token
-
-            token = get_token()
-            if token:
-                api = HfApi(token=token)
-                user = api.whoami()["name"]
-                backup_repo = f"{user}/TinyCeNN-LM-Colab-Backups"
-                api.create_repo(backup_repo, repo_type="model", private=True, exist_ok=True)
-                try:
-                    api.upload_file(
-                        repo_id=backup_repo,
-                        repo_type="model",
-                        path_or_fileobj=str(meta_file),
-                        path_in_repo=f"runs/{run_id}/run_status.json",
-                        commit_message=f"Start backup {run_id}",
-                    )
-                except Exception as exc:
-                    print(f"[TinyCeNN][BACKUP] initial metadata upload warning: {exc}", flush=True)
-            else:
-                print("[TinyCeNN][BACKUP] no Hugging Face token; live console remains enabled.", flush=True)
         except Exception as exc:
-            print(f"[TinyCeNN][BACKUP] disabled for this run: {exc}", flush=True)
-            api = None
-            backup_repo = None
+            raise RuntimeError(
+                "Mandatory Hugging Face backup requires huggingface_hub. "
+                "Install it before training."
+            ) from exc
+
+        token = get_token() or os.environ.get("HF_TOKEN")
+        if not token:
+            raise RuntimeError(
+                "Mandatory Hugging Face backup is enabled. Log in first or provide "
+                "HF_TOKEN (in Colab: add HF_TOKEN to Secrets and run the login cell)."
+            )
+
+        api = HfApi(token=token)
+        identity = _retry_required(api.whoami, label="Hugging Face authentication")
+        user = identity["name"]
+        backup_repo = f"{user}/TinyCeNN-LM-Colab-Backups"
+        _retry_required(
+            lambda: api.create_repo(
+                backup_repo,
+                repo_type="model",
+                private=True,
+                exist_ok=True,
+            ),
+            label="private backup repository preflight",
+        )
+        _retry_required(
+            lambda: api.upload_file(
+                repo_id=backup_repo,
+                repo_type="model",
+                path_or_fileobj=str(meta_file),
+                path_in_repo=f"runs/{run_id}/run_status.json",
+                commit_message=f"Start mandatory backup {run_id}",
+            ),
+            label="initial backup metadata upload",
+        )
 
         command_text = " ".join(shlex.quote(str(x)) for x in cmd)
         print("\n" + "=" * 88, flush=True)
@@ -206,11 +284,16 @@ def install_colab_training_backup(*, interval_seconds: int = 180) -> bool:
         if output_dir is not None:
             print(f"[TinyCeNN][OUTPUT] {output_dir}", flush=True)
         print(f"[TinyCeNN][LOCAL LOG] {log_file}", flush=True)
-        if backup_repo:
-            print(
-                f"[TinyCeNN][BACKUP] https://huggingface.co/{backup_repo}/tree/main/runs/{run_id}",
-                flush=True,
-            )
+        print(
+            f"[TinyCeNN][BACKUP REQUIRED] "
+            f"https://huggingface.co/{backup_repo}/tree/main/runs/{run_id}",
+            flush=True,
+        )
+        print(
+            f"[TinyCeNN][BACKUP POLICY] mandatory sync every {interval_seconds}s; "
+            "training aborts if backup cannot be persisted after retries",
+            flush=True,
+        )
         print("[TinyCeNN][LIVE] streaming training output...", flush=True)
         print("-" * 88, flush=True)
 
@@ -225,6 +308,8 @@ def install_colab_training_backup(*, interval_seconds: int = 180) -> bool:
             bufsize=1,
         )
         last_sync = started
+        backup_failure: Exception | None = None
+
         with log_file.open("a", encoding="utf-8") as log:
             assert proc.stdout is not None
             for line in proc.stdout:
@@ -233,53 +318,104 @@ def install_colab_training_backup(*, interval_seconds: int = 180) -> bool:
                 log.write(line)
                 log.flush()
                 now = time.monotonic()
-                if api is not None and backup_repo is not None and now - last_sync >= interval_seconds:
-                    _safe_upload_live(
-                        api,
-                        repo_id=backup_repo,
-                        run_id=run_id,
-                        output_dir=output_dir,
-                        log_file=log_file,
-                    )
-                    last_sync = now
+                if now - last_sync >= interval_seconds:
+                    try:
+                        _upload_live_required(
+                            api,
+                            repo_id=backup_repo,
+                            run_id=run_id,
+                            output_dir=output_dir,
+                            log_file=log_file,
+                        )
+                        print(
+                            f"[TinyCeNN][BACKUP OK] live state persisted at "
+                            f"{_format_elapsed(now - started)}",
+                            flush=True,
+                        )
+                        last_sync = now
+                    except Exception as exc:
+                        backup_failure = exc
+                        print(
+                            f"[TinyCeNN][BACKUP FATAL] {exc}. Terminating training to protect the run.",
+                            flush=True,
+                        )
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=30)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                        break
 
         returncode = proc.wait()
         elapsed = time.monotonic() - started
-        metadata["status"] = "completed" if returncode == 0 else "failed"
-        metadata["returncode"] = returncode
-        metadata["elapsed_seconds"] = elapsed
-        metadata["finished_utc"] = datetime.now(timezone.utc).isoformat()
-        meta_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
-        if api is not None and backup_repo is not None:
-            _safe_upload_live(
-                api,
-                repo_id=backup_repo,
-                run_id=run_id,
-                output_dir=output_dir,
-                log_file=log_file,
-            )
+        if backup_failure is not None:
+            metadata["status"] = "failed-backup"
+            metadata["returncode"] = returncode
+            metadata["elapsed_seconds"] = elapsed
+            metadata["finished_utc"] = datetime.now(timezone.utc).isoformat()
+            metadata["backup_error"] = redact_secrets(str(backup_failure))
+            meta_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+            # Best effort only for the failure marker; the triggering sync already
+            # proved that the remote is unavailable.
             try:
                 api.upload_file(
                     repo_id=backup_repo,
                     repo_type="model",
                     path_or_fileobj=str(meta_file),
                     path_in_repo=f"runs/{run_id}/run_status.json",
-                    commit_message=f"Finish backup {run_id}",
+                    commit_message=f"Backup failure {run_id}",
                 )
-                if output_dir is not None and output_dir.exists():
-                    api.upload_folder(
-                        repo_id=backup_repo,
-                        repo_type="model",
-                        folder_path=str(output_dir),
-                        path_in_repo=f"runs/{run_id}/checkpoint",
-                        ignore_patterns=[".hf_run_archive/**", ".hf_live_redacted/**"],
-                        commit_message=f"Backup checkpoint {run_id}",
-                    )
-            except Exception as exc:
-                print(f"[TinyCeNN][BACKUP] final upload warning: {exc}", flush=True)
+            except Exception:
+                pass
+            raise RuntimeError(
+                "Training was terminated because mandatory Hugging Face backup could not be maintained."
+            ) from backup_failure
+
+        metadata["status"] = "completed" if returncode == 0 else "failed-training"
+        metadata["returncode"] = returncode
+        metadata["elapsed_seconds"] = elapsed
+        metadata["finished_utc"] = datetime.now(timezone.utc).isoformat()
+        meta_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+        # Final backup is mandatory even when the trainer itself failed: preserve the
+        # complete log and whatever checkpoint/report data was produced before exit.
+        _upload_live_required(
+            api,
+            repo_id=backup_repo,
+            run_id=run_id,
+            output_dir=output_dir,
+            log_file=log_file,
+        )
+        _retry_required(
+            lambda: api.upload_file(
+                repo_id=backup_repo,
+                repo_type="model",
+                path_or_fileobj=str(meta_file),
+                path_in_repo=f"runs/{run_id}/run_status.json",
+                commit_message=f"Finish mandatory backup {run_id}",
+            ),
+            label="final status upload",
+        )
+        if output_dir is not None and output_dir.exists():
+            _retry_required(
+                lambda: api.upload_folder(
+                    repo_id=backup_repo,
+                    repo_type="model",
+                    folder_path=str(output_dir),
+                    path_in_repo=f"runs/{run_id}/checkpoint",
+                    ignore_patterns=[".hf_run_archive/**", ".hf_live_redacted/**"],
+                    commit_message=f"Final checkpoint backup {run_id}",
+                ),
+                label="final checkpoint upload",
+            )
 
         print("-" * 88, flush=True)
+        print(
+            f"[TinyCeNN][BACKUP COMPLETE] private Hugging Face backup committed for {run_id}",
+            flush=True,
+        )
         if returncode == 0:
             print(f"[TinyCeNN][DONE] {script} completed in {_format_elapsed(elapsed)}", flush=True)
         else:
