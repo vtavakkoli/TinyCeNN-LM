@@ -10,4 +10,5 @@ dist/
 *.egg-info/
 checkpoints/
 runs/
+result/
 wandb/
