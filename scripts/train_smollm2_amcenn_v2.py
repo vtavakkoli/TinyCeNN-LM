@@ -73,6 +73,13 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def scalar_value(value) -> float:
+    """Convert metric tensors to Python floats without autograd warnings."""
+    if torch.is_tensor(value):
+        return value.detach().float().item()
+    return float(value)
+
+
 def token_blocks(dataset, tokenizer, text_field: str, context_length: int):
     eos = tokenizer.eos_token_id
     if eos is None:
@@ -82,7 +89,11 @@ def token_blocks(dataset, tokenizer, text_field: str, context_length: int):
         text = str(row.get(text_field, "")).strip()
         if not text:
             continue
-        ids = tokenizer(text, add_special_tokens=False)["input_ids"]
+        # Documents can be longer than the base model's advertised maximum, but this
+        # function immediately slices the stream into context_length blocks. Suppress
+        # the tokenizer's whole-document length warning; the model still only receives
+        # fixed 128-token (or configured) blocks.
+        ids = tokenizer(text, add_special_tokens=False, verbose=False)["input_ids"]
         if not ids:
             continue
         buffer.extend(ids)
@@ -396,10 +407,11 @@ def main() -> None:
         updates += 1
         if updates == 1 or updates % args.log_every == 0:
             router = amcenn_router_stats(student)
+            route_mix = scalar_value(router["route_mix"])
             print(
                 f"global update={updates} tokens={final_tokens:,} ce={last['ce']:.4f} "
                 f"kl={last['kl']:.4f} hidden={last['hidden']:.4f} "
-                f"route_mix={float(router['route_mix']):.5f} grad={grad_norm:.3f}"
+                f"route_mix={route_mix:.5f} grad={grad_norm:.3f}"
             )
 
     elapsed = time.perf_counter() - start
@@ -431,8 +443,8 @@ def main() -> None:
         "last_training_ce": last["ce"],
         "last_distillation_kl": last["kl"],
         "last_hidden_alignment": last["hidden"],
-        "mean_route_mix": float(router["route_mix"]),
-        "mean_router_entropy": float(router["entropy"]),
+        "mean_route_mix": scalar_value(router["route_mix"]),
+        "mean_router_entropy": scalar_value(router["entropy"]),
         "elapsed_minutes": elapsed / 60.0,
         "peak_vram_gib": torch.cuda.max_memory_allocated() / (1024**3) if device.type == "cuda" else 0.0,
     }
