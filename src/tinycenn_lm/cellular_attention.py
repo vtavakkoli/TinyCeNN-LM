@@ -4,6 +4,10 @@ The layer keeps attention sparse and local at each cellular step, but changes
 the neighborhood across steps. Power-of-two dilations create an exponentially
 growing receptive field without constructing a T-by-T attention matrix.
 
+Adaptive variants add token/head-specific routing over the available distance
+scales. MaxPool variants add an old-school channel-wise max-pooling message as
+a learnable residual branch beside sparse softmax attention.
+
 This is a research reference implementation. It favors clarity and auditable
 causality over fused-kernel speed.
 """
@@ -23,7 +27,25 @@ VARIANTS = (
     "cellular_dilated5",
     "cellular_multiscale5",
     "cellular_shifted8",
+    "cellular_adaptive_multiscale5",
+    "cellular_multiscale5_maxpool",
+    "cellular_adaptive_maxpool5",
 )
+
+_ADAPTIVE_VARIANTS = {
+    "cellular_adaptive_multiscale5",
+    "cellular_adaptive_maxpool5",
+}
+_MAXPOOL_VARIANTS = {
+    "cellular_multiscale5_maxpool",
+    "cellular_adaptive_maxpool5",
+}
+_MULTISCALE_VARIANTS = {
+    "cellular_multiscale5",
+    "cellular_adaptive_multiscale5",
+    "cellular_multiscale5_maxpool",
+    "cellular_adaptive_maxpool5",
+}
 
 
 class CellularAttentionLayer(nn.Module):
@@ -32,13 +54,16 @@ class CellularAttentionLayer(nn.Module):
     Q/K/V are expected after the pretrained model's RoPE. Q/K/V/O projections
     stay outside this module and can remain frozen in the replacement benchmark.
 
-    The recurrent value state is updated step by step:
-        H^(0) = repeat_gqa(V)
-        H^(s+1)_i = (1-g_s) H^(s)_i + g_s sum_j a_ij H^(s)_j
+    The recurrent value state is updated step by step::
 
-    where each j belongs to a small causal neighborhood. Dilated variants use
-    d_s = 2^s (or a supplied schedule), reducing maximum information-path length
-    from O(N) local propagation to O(log N) cellular steps.
+        H^(0) = repeat_gqa(V)
+        H^(s+1)_i = H^(s)_i + g_s (M^(s)_i - H^(s)_i)
+
+    Standard variants obtain ``M`` from sparse softmax attention. Adaptive
+    variants multiply the content attention by a separately learned routing
+    distribution over distance scales. MaxPool variants blend the sparse
+    attention message with channel-wise max pooling over the same causal
+    neighborhood. The blend is learned per cellular step and head.
     """
 
     def __init__(
@@ -100,16 +125,55 @@ class CellularAttentionLayer(nn.Module):
             len(self.dilations), self.num_heads
         ))
 
+        # Adaptive routing is deliberately separate from QK content similarity.
+        # Each token/head queries learned route prototypes for the available
+        # distance choices. log(route_prob) becomes a prior on sparse attention.
+        if self.uses_adaptive_routing():
+            self.route_key = nn.Parameter(torch.empty(
+                len(self.dilations), self.num_heads, max_neighbors, self.feature_dim
+            ))
+            nn.init.normal_(self.route_key, mean=0.0, std=0.02)
+            self.route_prior = nn.Parameter(torch.zeros(
+                len(self.dilations), self.num_heads, max_neighbors
+            ))
+            self.route_strength = nn.Parameter(torch.zeros(
+                len(self.dilations), self.num_heads
+            ))
+        else:
+            self.register_parameter("route_key", None)
+            self.register_parameter("route_prior", None)
+            self.register_parameter("route_strength", None)
+
+        # MaxPool is an intentionally old-school competing information path.
+        # It is residual/blended rather than pure hard pooling so Q/K gradients
+        # and the pretrained attention-like path remain available during fitting.
+        if self.uses_maxpool_branch():
+            self.pool_mix_logit = nn.Parameter(torch.full(
+                (len(self.dilations), self.num_heads), -1.5
+            ))
+            self.log_pool_gain = nn.Parameter(torch.zeros(
+                len(self.dilations), self.num_heads
+            ))
+        else:
+            self.register_parameter("pool_mix_logit", None)
+            self.register_parameter("log_pool_gain", None)
+
         eye = torch.eye(self.head_dim).expand(self.num_heads, -1, -1).clone()
         self.out_proj = nn.Parameter(eye)
         self.final_gate = nn.Parameter(torch.full((self.num_heads,), 2.0))
         self.log_gain = nn.Parameter(torch.zeros(self.num_heads))
 
+    def uses_adaptive_routing(self) -> bool:
+        return self.variant in _ADAPTIVE_VARIANTS
+
+    def uses_maxpool_branch(self) -> bool:
+        return self.variant in _MAXPOOL_VARIANTS
+
     @staticmethod
     def _max_neighbors_for_variant(variant: str) -> int:
         if variant in ("cellular_local3", "cellular_dilated3"):
             return 3
-        if variant in ("cellular_dilated5", "cellular_multiscale5"):
+        if variant in ("cellular_dilated5", *_MULTISCALE_VARIANTS):
             return 5
         if variant == "cellular_shifted8":
             return 8
@@ -135,7 +199,7 @@ class CellularAttentionLayer(nn.Module):
             return (0, d, 2 * d)
         if self.variant == "cellular_dilated5":
             return (0, d, 2 * d, 3 * d, 4 * d)
-        if self.variant == "cellular_multiscale5":
+        if self.variant in _MULTISCALE_VARIANTS:
             return tuple(dict.fromkeys((0, 1, d, 2 * d, 4 * d)))
         if self.variant == "cellular_shifted8":
             return tuple(range(self.shifted_window))
@@ -161,6 +225,41 @@ class CellularAttentionLayer(nn.Module):
         kf = F.normalize(torch.einsum("bhtd,hfd->bhtf", k, self.wk), dim=-1)
         return qf, kf.repeat_interleave(self.groups, dim=1)
 
+    def _adaptive_route_log_prior(
+        self,
+        query: Tensor,
+        valid: Tensor,
+        step: int,
+        width: int,
+    ) -> Tensor:
+        assert self.route_key is not None
+        assert self.route_prior is not None
+        assert self.route_strength is not None
+        prototypes = self.route_key[step, :, :width, :]
+        route_logits = torch.einsum("bhtf,hwf->bhtw", query, prototypes)
+        route_logits = route_logits / math.sqrt(self.feature_dim)
+        route_logits = route_logits + self.route_prior[step, :, :width][None, :, None, :]
+        route_logits = route_logits.masked_fill(
+            ~valid[None, None, :, :], float("-inf")
+        )
+        strength = F.softplus(self.route_strength[step])[None, :, None, None]
+        return route_logits.log_softmax(dim=-1) * strength
+
+    def _maxpool_message(
+        self,
+        values: Tensor,
+        valid: Tensor,
+        step: int,
+    ) -> Tensor:
+        assert self.pool_mix_logit is not None
+        assert self.log_pool_gain is not None
+        masked = values.masked_fill(
+            ~valid[None, None, :, :, None], float("-inf")
+        )
+        pooled = masked.amax(dim=-2)
+        gain = self.log_pool_gain[step].clamp(-3, 3).exp()[None, :, None, None]
+        return pooled * gain
+
     def _cellular_step(
         self,
         qf: Tensor,
@@ -183,8 +282,20 @@ class CellularAttentionLayer(nn.Module):
         width = index.shape[1]
         scores = scores + self.relative_bias[step, :, :width][None, :, None, :]
         scores = scores.masked_fill(~valid[None, None, :, :], float("-inf"))
+
+        if self.uses_adaptive_routing():
+            scores = scores + self._adaptive_route_log_prior(
+                query, valid, step, width
+            )
+
         weights = scores.softmax(dim=-1)
         message = torch.einsum("bhtw,bhtwd->bhtd", weights, values)
+
+        if self.uses_maxpool_branch():
+            pooled = self._maxpool_message(values, valid, step)
+            assert self.pool_mix_logit is not None
+            pool_mix = self.pool_mix_logit[step].sigmoid()[None, :, None, None]
+            message = message + pool_mix * (pooled - message)
 
         gate = self.step_gate[step].sigmoid()[None, :, None, None]
         return state + gate * (message - state)
