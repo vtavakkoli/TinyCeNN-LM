@@ -222,7 +222,9 @@ def gradient_fidelity(core, sample, device):
     for name, reference, candidate in zip(("q", "k", "v"), ref_grads, new_grads):
         result[f"grad_{name}_cosine"] = float(F.cosine_similarity(
             reference.reshape(1, -1), candidate.reshape(1, -1), dim=-1).item())
-        result[f"grad_{name}_nmse"] = float(nmse(reference, candidate))
+        result[f"grad_{name}_nmse"] = float(
+            (reference - candidate).square().sum() / reference.square().sum().clamp_min(1e-30)
+        )
     result["grad_mean_cosine"] = statistics.fmean(
         result[f"grad_{name}_cosine"] for name in ("q", "k", "v")
     )
@@ -236,6 +238,8 @@ def fit_transfer(core, train, validation, args, checkpoint, key):
     rng = random.Random(args.seed)
     history = []
     initial = evaluate_transfer(core, validation, args.device)
+    history.append({"candidate": key, "phase": "transfer", "step": 0,
+                    "train_loss": None, **initial})
     best = initial["output_nmse"]
     best_state = {name: value.detach().cpu().clone() for name, value in core.state_dict().items()}
     save_checkpoint(checkpoint, core, {"phase": "transfer", "step": 0, **initial})
@@ -274,6 +278,8 @@ def fit_language_loss(model, layer, core, blocks, samples, validation, args, che
     with replace_attention(model, layer, core) as wrapper:
         before = evaluate_nll(model, validation, args.context, args.device)
         best = statistics.fmean(before)
+        history.append({"candidate": key, "phase": "lm", "step": 0,
+                        "train_loss": None, "validation_nll": best})
         best_state = {name: value.detach().cpu().clone() for name, value in core.state_dict().items()}
         save_checkpoint(checkpoint, core, {"phase": "lm", "step": 0, "validation_nll": best})
         optimizer = torch.optim.AdamW(core.parameters(), lr=args.lr * 0.2, weight_decay=1e-4)
