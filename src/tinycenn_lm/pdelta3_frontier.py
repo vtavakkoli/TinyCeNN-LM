@@ -125,9 +125,7 @@ class FrontierPDelta3Layer(nn.Module):
         if self.is_gdn2:
             kv_map = _orthogonal_maps(self.num_kv_heads, self.feature_dim, self.head_dim)
             self.wk = nn.Parameter(kv_map)
-            self.wq = nn.Parameter(
-                kv_map.repeat_interleave(self.groups, dim=0).clone()
-            )
+            self.wq = nn.Parameter(kv_map.repeat_interleave(self.groups, dim=0).clone())
             self.erase_w = nn.Parameter(
                 torch.zeros(self.num_kv_heads, self.feature_dim, self.head_dim)
             )
@@ -146,13 +144,10 @@ class FrontierPDelta3Layer(nn.Module):
             self.register_parameter("write_b", None)
             self.register_parameter("log_gain", None)
 
-        # KDA/GDN2-style channel decay.  It is used by the channel-decay and
-        # GDN2 variants; the PDelta control keeps its original forget path.
         if not self.is_pdelta:
             self.decay_w = nn.Parameter(
                 torch.zeros(self.num_kv_heads, self.feature_dim, self.head_dim)
             )
-            # Initial step sizes span short-to-long retention channels.
             dt = torch.exp(torch.linspace(
                 math.log(0.001), math.log(0.05), self.feature_dim
             )).clamp_min(1e-4)
@@ -165,18 +160,15 @@ class FrontierPDelta3Layer(nn.Module):
             self.register_parameter("dt_bias", None)
             self.register_parameter("A_log", None)
 
-        # The proven control uses Conv4 on V.  GDN2-style candidates use the
+        # The proven control uses Conv4 on V. GDN2-style candidates use the
         # frontier-model Q/K/V short-convolution pattern.
-        self.q_conv_weight = self._make_conv_weight(self.num_heads) if self.is_gdn2 else None
-        self.k_conv_weight = self._make_conv_weight(self.num_kv_heads) if self.is_gdn2 else None
-        self.v_conv_weight = self._make_conv_weight(self.num_kv_heads)
-        if self.q_conv_weight is not None:
-            self.q_conv_weight = nn.Parameter(self.q_conv_weight)
-            self.k_conv_weight = nn.Parameter(self.k_conv_weight)
+        if self.is_gdn2:
+            self.q_conv_weight = nn.Parameter(self._make_conv_weight(self.num_heads))
+            self.k_conv_weight = nn.Parameter(self._make_conv_weight(self.num_kv_heads))
         else:
             self.register_parameter("q_conv_weight", None)
             self.register_parameter("k_conv_weight", None)
-        self.v_conv_weight = nn.Parameter(self.v_conv_weight)
+        self.v_conv_weight = nn.Parameter(self._make_conv_weight(self.num_kv_heads))
 
         if self.use_clvr:
             route = torch.eye(self.head_dim)[None].repeat(self.num_kv_heads, 1, 1)
@@ -184,8 +176,9 @@ class FrontierPDelta3Layer(nn.Module):
             self.route_gate_w = nn.Parameter(
                 torch.zeros(self.num_kv_heads, self.head_dim, self.head_dim)
             )
-            # Nearly off at initialization; learning decides when lower-layer V helps.
-            self.route_gate_b = nn.Parameter(torch.full((self.num_kv_heads, self.head_dim), -4.0))
+            self.route_gate_b = nn.Parameter(
+                torch.full((self.num_kv_heads, self.head_dim), -4.0)
+            )
         else:
             self.register_parameter("route_proj", None)
             self.register_parameter("route_gate_w", None)
@@ -231,7 +224,6 @@ class FrontierPDelta3Layer(nn.Module):
         raw_dt = self._project(kn, self.decay_w, self.dt_bias)
         dt = F.softplus(raw_dt.float())
         rate = self.A_log.float().clamp(-4, 2).exp()[None, :, None, :] * dt
-        # The existing bounded chunk solver remains numerically safe in this range.
         return -rate.clamp(1e-5, 0.25)
 
     def _working_state(self, state: FrontierState | None):
@@ -263,15 +255,24 @@ class FrontierPDelta3Layer(nn.Module):
 
     def _run_pdelta(self, q: Tensor, k: Tensor, v: Tensor, state: FrontierState | None,
                     channel_decay: bool):
-        v_conv, v_tail = self._conv(v, self.v_conv_weight, None if state is None else state.v_tail)
+        v_conv, v_tail = self._conv(
+            v, self.v_conv_weight, None if state is None else state.v_tail
+        )
         pstate = None
         if state is not None:
-            pstate = PDeltaState(state.memory.to(self.pdelta.wq.dtype), state.curvature.to(self.pdelta.wq.dtype))
+            if state.curvature is None:
+                raise ValueError("PDelta variants require a curvature state")
+            pstate = PDeltaState(
+                state.memory.to(self.pdelta.wq.dtype),
+                state.curvature.to(self.pdelta.wq.dtype),
+            )
         if not channel_decay:
             output, new = self.pdelta(q, k, v_conv, state=pstate, return_state=True)
         else:
             qf, kf, z, erase, _ = self.pdelta.features(
-                q.to(self.pdelta.wq.dtype), k.to(self.pdelta.wq.dtype), v_conv.to(self.pdelta.wq.dtype)
+                q.to(self.pdelta.wq.dtype),
+                k.to(self.pdelta.wq.dtype),
+                v_conv.to(self.pdelta.wq.dtype),
             )
             curvature = (
                 qf.new_ones(qf.shape[0], self.num_kv_heads, self.feature_dim)
@@ -291,9 +292,15 @@ class FrontierPDelta3Layer(nn.Module):
 
     def _run_gdn2(self, q: Tensor, k: Tensor, v: Tensor, routed_v: Tensor | None,
                    state: FrontierState | None):
-        q_conv, q_tail = self._conv(q, self.q_conv_weight, None if state is None else state.q_tail)
-        k_conv, k_tail = self._conv(k, self.k_conv_weight, None if state is None else state.k_tail)
-        v_conv, v_tail = self._conv(v, self.v_conv_weight, None if state is None else state.v_tail)
+        q_conv, q_tail = self._conv(
+            q, self.q_conv_weight, None if state is None else state.q_tail
+        )
+        k_conv, k_tail = self._conv(
+            k, self.k_conv_weight, None if state is None else state.k_tail
+        )
+        v_conv, v_tail = self._conv(
+            v, self.v_conv_weight, None if state is None else state.v_tail
+        )
 
         qn, kn = F.normalize(q_conv, dim=-1), F.normalize(k_conv, dim=-1)
         qf = F.normalize(self._project(qn, self.wq), dim=-1)
@@ -301,7 +308,9 @@ class FrontierPDelta3Layer(nn.Module):
         log_decay = self._channel_decay(k_conv)
 
         erase_gate = self._project(kn, self.erase_w, self.erase_b).sigmoid()
-        write_gate = self._project(F.normalize(v_conv, dim=-1), self.write_w, self.write_b).sigmoid()
+        write_gate = self._project(
+            F.normalize(v_conv, dim=-1), self.write_w, self.write_b
+        ).sigmoid()
         write_value = v_conv
 
         if self.use_clvr:
@@ -309,7 +318,9 @@ class FrontierPDelta3Layer(nn.Module):
                 routed_v = torch.zeros_like(v_conv)
             if routed_v.shape != v_conv.shape:
                 raise ValueError("routed_v must match current V shape")
-            aligned = torch.einsum("bhtd,hde->bhte", routed_v.float(), self.route_proj.float())
+            aligned = torch.einsum(
+                "bhtd,hde->bhte", routed_v.float(), self.route_proj.float()
+            )
             route_gate = self._project(kn, self.route_gate_w, self.route_gate_b).sigmoid()
             write_value = write_value + route_gate * aligned
 
@@ -348,7 +359,7 @@ class FrontierPDelta3Layer(nn.Module):
         memory_bytes = 2 if self.state_dtype == "fp16" else 4
         total = self.num_kv_heads * self.feature_dim * self.head_dim * memory_bytes
         if self.is_pdelta or self.is_channel_decay:
-            total += self.num_kv_heads * self.feature_dim * 4  # curvature stays fp32
+            total += self.num_kv_heads * self.feature_dim * 4
             conv_heads = self.num_kv_heads
         else:
             conv_heads = self.num_heads + 2 * self.num_kv_heads
