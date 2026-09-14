@@ -113,7 +113,6 @@ class MemoryFusionLlamaAttention(nn.Module):
         if attention_mask is not None and attention_mask.ndim == 4:
             if attention_mask.shape[-1] != seq_len:
                 raise ValueError("attention mask length mismatch")
-            # A standard unpadded causal mask has a fully valid final query row.
             if bool((attention_mask[..., -1, :] < -1e4).any()):
                 raise ValueError("padded batches are not supported by Memory Fusion attention")
 
@@ -230,7 +229,11 @@ def parameter_summary(model: nn.Module) -> dict[str, int | float]:
 
 def structural_summary(model: nn.Module) -> dict[str, int]:
     fusion = sum(isinstance(m, MemoryFusionLlamaAttention) for m in model.modules())
-    transformer = sum("LlamaAttention" in m.__class__.__name__ for m in model.modules())
+    transformer = sum(
+        m.__class__.__name__ == "LlamaAttention"
+        for m in model.modules()
+        if not isinstance(m, MemoryFusionLlamaAttention)
+    )
     return {"memory_fusion_layers": fusion, "transformer_attention_layers": transformer}
 
 
