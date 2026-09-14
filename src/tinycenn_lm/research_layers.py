@@ -200,8 +200,11 @@ class ResearchCeNNLayer(nn.Module):
                    + self.mix_b[None, :, None]).sigmoid().unsqueeze(-1)
             output = mix * local + (1.0 - mix) * output
             keep = self.window - 1
-            new_state.keys = keys[:, :, -keep:].contiguous() if keep else keys[:, :, :0]
-            new_state.values = values[:, :, -keep:].contiguous() if keep else values[:, :, :0]
+            # Clone even contiguous slices: a view can retain the entire prefix storage.
+            new_state.keys = keys[:, :, -keep:].clone() if keep else keys.new_empty(
+                keys.shape[0], keys.shape[1], 0, keys.shape[-1])
+            new_state.values = values[:, :, -keep:].clone() if keep else values.new_empty(
+                values.shape[0], values.shape[1], 0, values.shape[-1])
         return (output, new_state) if return_state else output
 
     def recurrent_state_bytes(self, batch_size=1):
