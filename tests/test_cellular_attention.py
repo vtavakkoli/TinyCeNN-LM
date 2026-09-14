@@ -26,9 +26,9 @@ def test_cellular_attention_shapes_and_gradients(variant):
     assert out.shape == (2, 4, 48, 16)
     assert torch.isfinite(out).all()
     out.square().mean().backward()
-    assert torch.isfinite(q.grad).all()
-    assert torch.isfinite(k.grad).all()
-    assert torch.isfinite(v.grad).all()
+    assert q.grad is not None and torch.isfinite(q.grad).all()
+    assert k.grad is not None and torch.isfinite(k.grad).all()
+    assert v.grad is not None and torch.isfinite(v.grad).all()
 
 
 @pytest.mark.parametrize("variant", VARIANTS)
@@ -62,7 +62,15 @@ def test_dilated_receptive_field_grows_exponentially():
 
 @pytest.mark.parametrize(
     "variant",
-    ["cellular_dilated3", "cellular_dilated5", "cellular_multiscale5", "cellular_shifted8"],
+    [
+        "cellular_dilated3",
+        "cellular_dilated5",
+        "cellular_multiscale5",
+        "cellular_shifted8",
+        "cellular_adaptive_multiscale5",
+        "cellular_multiscale5_maxpool",
+        "cellular_adaptive_maxpool5",
+    ],
 )
 def test_sparse_score_pairs_are_below_dense_attention(variant):
     layer = CellularAttentionLayer(
@@ -76,9 +84,84 @@ def test_sparse_score_pairs_are_below_dense_attention(variant):
     assert sparse < dense
 
 
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "cellular_multiscale5",
+        "cellular_adaptive_multiscale5",
+        "cellular_multiscale5_maxpool",
+        "cellular_adaptive_maxpool5",
+    ],
+)
+def test_multiscale_family_keeps_same_receptive_field_and_score_budget(variant):
+    baseline = CellularAttentionLayer(
+        4, 2, 16, feature_dim=12, variant="cellular_multiscale5",
+        dilations=(1, 2, 4, 8, 16, 32, 64, 128),
+    )
+    candidate = CellularAttentionLayer(
+        4, 2, 16, feature_dim=12, variant=variant,
+        dilations=(1, 2, 4, 8, 16, 32, 64, 128),
+    )
+    assert candidate.receptive_field_tokens() == baseline.receptive_field_tokens() == 1021
+    assert candidate.max_score_pairs(512) == baseline.max_score_pairs(512)
+    assert candidate.max_neighbors_per_step() == 5
+
+
+def test_adaptive_routing_parameters_receive_gradients():
+    q, k, v = make_inputs(40)
+    layer = CellularAttentionLayer(
+        4, 2, 16, feature_dim=12,
+        variant="cellular_adaptive_multiscale5",
+        dilations=(1, 2, 4, 8),
+    )
+    loss = layer(q, k, v).square().mean()
+    loss.backward()
+    for parameter in (layer.route_key, layer.route_prior, layer.route_strength):
+        assert parameter is not None
+        assert parameter.grad is not None
+        assert torch.isfinite(parameter.grad).all()
+        assert parameter.grad.abs().sum() > 0
+
+
+def test_maxpool_branch_parameters_receive_gradients():
+    q, k, v = make_inputs(40)
+    layer = CellularAttentionLayer(
+        4, 2, 16, feature_dim=12,
+        variant="cellular_multiscale5_maxpool",
+        dilations=(1, 2, 4, 8),
+    )
+    loss = layer(q, k, v).square().mean()
+    loss.backward()
+    for parameter in (layer.pool_mix_logit, layer.log_pool_gain):
+        assert parameter is not None
+        assert parameter.grad is not None
+        assert torch.isfinite(parameter.grad).all()
+        assert parameter.grad.abs().sum() > 0
+
+
+def test_maxpool_branch_can_fall_back_to_multiscale_attention():
+    torch.manual_seed(77)
+    baseline = CellularAttentionLayer(
+        4, 2, 16, feature_dim=12, variant="cellular_multiscale5",
+        dilations=(1, 2, 4, 8),
+    ).eval()
+    torch.manual_seed(77)
+    candidate = CellularAttentionLayer(
+        4, 2, 16, feature_dim=12, variant="cellular_multiscale5_maxpool",
+        dilations=(1, 2, 4, 8),
+    ).eval()
+    candidate.load_state_dict(baseline.state_dict(), strict=False)
+    with torch.no_grad():
+        candidate.pool_mix_logit.fill_(-30.0)
+        q, k, v = make_inputs(32)
+        expected = baseline(q, k, v)
+        actual = candidate(q, k, v)
+    torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
+
+
 def test_checkpoint_config_reconstructs_exactly():
     layer = CellularAttentionLayer(
-        4, 2, 16, feature_dim=20, variant="cellular_multiscale5",
+        4, 2, 16, feature_dim=20, variant="cellular_adaptive_maxpool5",
         dilations=(1, 2, 4, 8), shifted_window=6,
     )
     clone = CellularAttentionLayer(**layer.config)
