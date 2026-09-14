@@ -242,8 +242,14 @@ class CellularAttentionLayer(nn.Module):
         route_logits = route_logits.masked_fill(
             ~valid[None, None, :, :], float("-inf")
         )
+        route_log_prob = route_logits.log_softmax(dim=-1)
+        # Avoid -inf * learnable_strength on masked entries: those positions are
+        # already excluded from content scores and should contribute zero gradient.
+        route_log_prob = route_log_prob.masked_fill(
+            ~valid[None, None, :, :], 0.0
+        )
         strength = F.softplus(self.route_strength[step])[None, :, None, None]
-        return route_logits.log_softmax(dim=-1) * strength
+        return route_log_prob * strength
 
     def _maxpool_message(
         self,
