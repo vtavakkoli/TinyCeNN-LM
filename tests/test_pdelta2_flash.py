@@ -69,7 +69,8 @@ def test_indexed_summary_storage_is_smaller_than_token_kv():
     context = 512
     summary_only = 2 * (context // 16) * 2 * 8 * 2
     token_kv = 2 * context * 2 * 8 * 2
-    assert summary_only * 8 == token_kv
+    assert summary_only * 16 == token_kv
+    assert summary_only < token_kv
     assert layer.index_pairs_per_token(context) == 4
 
 
