@@ -75,6 +75,20 @@ class OptimizedMemory(nn.Module):
         dtype = getattr(torch, self.compute_dtype) if a.is_cuda else torch.float32
         return torch.matmul(a.to(dtype), b.to(dtype)).float()
 
+    def attend(self, q, k, v, mask=None, causal=False):
+        dtype = getattr(torch, self.compute_dtype) if q.is_cuda else torch.float32
+        shape = q.shape
+        if q.ndim == 5:
+            b, h, n, c, d = shape
+            length = k.shape[-2]
+            q, k, v = (x.reshape(b * h * n, 1, x.shape[-2], d) for x in (q, k, v))
+            if mask is not None:
+                mask = mask.expand(b, h, n, c, length).reshape(b * h * n, 1, c, length)
+        out = F.scaled_dot_product_attention(
+            q.to(dtype), k.to(dtype), v.to(dtype), attn_mask=mask, is_causal=causal
+        ).float()
+        return out.reshape(shape)
+
     def features(self, x, query=False):
         weight = self.wq if query else self.wk
         # Retain input norms: do not impose the previous experiment's L2 normalization.
@@ -98,6 +112,9 @@ class OptimizedMemory(nn.Module):
 
     def combine(self, q, local_k, local_v, valid, numerator=None, denominator=None):
         """Shared log-stabilized denominator for exact and compressed contributions."""
+        if self.variant == "sink_window":
+            return self.attend(q, local_k.repeat_interleave(self.groups, 1),
+                               local_v.repeat_interleave(self.groups, 1), mask=valid)
         scores = self.mm(q / math.sqrt(self.head_dim),
                          local_k.repeat_interleave(self.groups, dim=1).transpose(-1, -2))
         scores = scores.masked_fill(~valid, float("-inf"))
@@ -132,20 +149,20 @@ class OptimizedMemory(nn.Module):
             *blocks.shape[:2], delay, *blocks.shape[3:])
         return torch.cat((zeros, cumulative), dim=2)[:, :, :blocks.shape[2]]
 
-    def prefill(self, q, k, v):
+    def prefill(self, q, k, v, need_state=True):
         b, _, t, d = q.shape
+        state = self.empty_state(k) if need_state else None
+        if self.variant == "transformer_readout":
+            output = self.attend(q, k.repeat_interleave(self.groups, 1),
+                                 v.repeat_interleave(self.groups, 1), causal=True)
+            if need_state:
+                state.keys, state.values, state.position = k.clone(), v.clone(), t
+            return output, state
         c = self.block_size
         n = (t + c - 1) // c
         pad = n * c - t
         kb = F.pad(k, (0, 0, 0, pad)).reshape(b, self.num_kv_heads, n, c, d)
         vb = F.pad(v, (0, 0, 0, pad)).reshape(b, self.num_kv_heads, n, c, d)
-        state = self.empty_state(k)
-        if self.variant == "transformer_readout":
-            output = F.scaled_dot_product_attention(
-                q, k.repeat_interleave(self.groups, 1), v.repeat_interleave(self.groups, 1),
-                is_causal=True).float()
-            state.keys, state.values, state.position = k.clone(), v.clone(), t
-            return output, state
         if self.has_memory:
             phi_k = self.features(k)
             if self.variant == "cenn_partition":
@@ -166,7 +183,8 @@ class OptimizedMemory(nn.Module):
                 pq, past_z.repeat_interleave(self.groups, 1).unsqueeze(-1)
             ) + within.sum(-1, keepdim=True)
             output = (numerator / denominator.clamp_min(1e-20)).reshape(b, self.num_heads, n * c, d)[:, :, :t]
-            state.numerator, state.denominator = writes.sum(2), masses.sum(2)
+            if need_state:
+                state.numerator, state.denominator = writes.sum(2), masses.sum(2)
         else:
             qb = F.pad(q, (0, 0, 0, pad)).reshape(b, self.num_heads, n, c, d)
             previous_k = torch.cat((torch.zeros_like(kb[:, :, :1]), kb[:, :, :-1]), dim=2)
@@ -191,12 +209,14 @@ class OptimizedMemory(nn.Module):
                                   past_n if self.has_memory else None,
                                   past_z if self.has_memory else None)
             output = output.reshape(b, self.num_heads, n * c, d)[:, :, :t]
-            if self.has_memory:
-                state.numerator, state.denominator = past_n[:, :, -1].clone(), past_z[:, :, -1].clone()
-            keep = min(t, c + (t - 1) % c + 1)
-            state.keys, state.values = k[:, :, -keep:].clone(), v[:, :, -keep:].clone()
-            state.sinks_k, state.sinks_v = k[:, :, :s].clone(), v[:, :, :s].clone()
-        state.position = t
+            if need_state:
+                if self.has_memory:
+                    state.numerator, state.denominator = past_n[:, :, -1].clone(), past_z[:, :, -1].clone()
+                keep = min(t, c + (t - 1) % c + 1)
+                state.keys, state.values = k[:, :, -keep:].clone(), v[:, :, -keep:].clone()
+                state.sinks_k, state.sinks_v = k[:, :, :s].clone(), v[:, :, :s].clone()
+        if need_state:
+            state.position = t
         return output, state
 
     def step(self, q, k, v, state):
@@ -207,9 +227,8 @@ class OptimizedMemory(nn.Module):
         sinks_k, sinks_v = state.sinks_k, state.sinks_v
         if self.variant == "transformer_readout":
             keys, values = torch.cat((keys, k), 2), torch.cat((values, v), 2)
-            output = F.scaled_dot_product_attention(
-                q, keys.repeat_interleave(self.groups, 1), values.repeat_interleave(self.groups, 1),
-                is_causal=False).float()
+            output = self.attend(q, keys.repeat_interleave(self.groups, 1),
+                                 values.repeat_interleave(self.groups, 1), causal=False)
         elif self.variant == "cenn_linear":
             pk = self.features(k)
             num = num + self.mm(pk.transpose(-1, -2), v)
@@ -245,14 +264,14 @@ class OptimizedMemory(nn.Module):
             raise ValueError("Incompatible Q/K/V")
         q, k, v = q.float(), k.float(), v.float()
         if state is None:
-            output, state = self.prefill(q, k, v)
+            output, state = self.prefill(q, k, v, need_state=return_state)
         else:
             outputs = []
             for i in range(q.shape[2]):
                 value, state = self.step(q[:, :, i:i+1], k[:, :, i:i+1], v[:, :, i:i+1], state)
                 outputs.append(value)
             output = torch.cat(outputs, 2)
-        if apply_readout:
+        if apply_readout and self.variant != "sink_window":
             output = self.calibrate(output)
         return (output, state) if return_state else output
 
