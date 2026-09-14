@@ -154,6 +154,11 @@ def parse_args():
     parser.add_argument("--profile", choices=tuple(PROFILES), default="balanced")
     parser.add_argument("--layers", default="18")
     parser.add_argument("--variants", default=DEFAULT_VARIANTS)
+    parser.add_argument(
+        "--feature-dims",
+        default=None,
+        help="optional comma-separated override for the selected profile",
+    )
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--output-root", default="result/cellular-attention-colab")
     parser.add_argument("--skip-preflight", action="store_true")
@@ -172,11 +177,16 @@ def main() -> int:
     root.mkdir(parents=True, exist_ok=True)
     status_file = root / "last_run.json"
 
+    profile_config = dict(PROFILES[args.profile])
+    if args.feature_dims:
+        profile_config["feature-dims"] = args.feature_dims
+
     run_meta = {
         "status": "starting",
         "profile": args.profile,
         "layers": args.layers,
         "variants": args.variants,
+        "feature_dims": profile_config["feature-dims"],
         "seed": args.seed,
         "python": sys.version,
     }
@@ -186,17 +196,25 @@ def main() -> int:
         preflight_id = utc_id()
         preflight_dir = root / f"preflight-{preflight_id}"
         preflight_log = root / f"preflight-{preflight_id}.log"
+        preflight_config = dict(PREFLIGHT)
+        if args.feature_dims:
+            preflight_config["feature-dims"] = args.feature_dims.split(",")[0].strip()
+        preflight_variant = args.variants.split(",")[0].strip()
         preflight_cmd = command_for(
             benchmark,
             preflight_dir,
             layers=args.layers.split(",")[0],
-            variants="cellular_dilated3",
+            variants=preflight_variant,
             seed=args.seed,
-            config=PREFLIGHT,
+            config=preflight_config,
         )
-        print("\n=== Cellular Attention full-pipeline preflight ===", flush=True)
+        print(
+            f"\n=== Cellular Attention full-pipeline preflight: {preflight_variant} ===",
+            flush=True,
+        )
         code = stream(preflight_cmd, cwd=repo, log_file=preflight_log)
         run_meta.update({
+            "preflight_variant": preflight_variant,
             "preflight_output_dir": str(preflight_dir),
             "preflight_log": str(preflight_log),
             "preflight_exit_code": code,
@@ -222,7 +240,7 @@ def main() -> int:
         layers=args.layers,
         variants=args.variants,
         seed=args.seed,
-        config=PROFILES[args.profile],
+        config=profile_config,
     )
 
     print(f"\n=== Cellular Attention {args.profile} run ===", flush=True)
