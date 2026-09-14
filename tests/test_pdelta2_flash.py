@@ -74,6 +74,24 @@ def test_indexed_summary_storage_is_smaller_than_token_kv():
     assert layer.index_pairs_per_token(context) == 4
 
 
+def test_streaming_decode_matches_full_last_token_and_stores_fp16_memory():
+    torch.manual_seed(4)
+    layer = FlashPDelta2Layer(
+        4, 2, 8, feature_dim=16, output_gate=True, conv_kernel=4,
+        indexed_retrieval=True, block_size=8, index_topk=2, state_dtype="fp16",
+    ).eval()
+    q = torch.randn(1, 4, 33, 8)
+    k = torch.randn(1, 2, 33, 8)
+    v = torch.randn(1, 2, 33, 8)
+    with torch.no_grad():
+        full = layer(q, k, v)
+        _, state = layer(q[:, :, :32], k[:, :, :32], v[:, :, :32], return_state=True)
+        step = layer(q[:, :, 32:], k[:, :, 32:], v[:, :, 32:], state=state)
+    assert state.recurrent.memory.dtype == torch.float16
+    assert state.recurrent.curvature.dtype == torch.float32
+    torch.testing.assert_close(full[:, :, 32:], step, rtol=5e-4, atol=5e-4)
+
+
 def test_benchmark_cli_absolute_path_help():
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "benchmark_pdelta2_flash_layer.py"
