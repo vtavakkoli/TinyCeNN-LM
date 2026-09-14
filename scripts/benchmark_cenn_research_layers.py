@@ -207,6 +207,28 @@ def evaluate_transfer(core, samples, device):
             "output_cosine": statistics.fmean(similarities)}
 
 
+def gradient_fidelity(core, sample, device):
+    """Input-gradient diagnostic on one fixed document, outside the timing region."""
+    q, k, v, target = (x.to(device) for x in sample)
+    generator = torch.Generator(device=device).manual_seed(424242)
+    probe = torch.randn(target.shape, generator=generator, device=device)
+    ref_inputs = [x.detach().clone().requires_grad_(True) for x in (q, k, v)]
+    new_inputs = [x.detach().clone().requires_grad_(True) for x in (q, k, v)]
+    reference = softmax_reference(*ref_inputs, core.groups)
+    output = core(*new_inputs)
+    ref_grads = torch.autograd.grad((reference * probe).mean(), ref_inputs)
+    new_grads = torch.autograd.grad((output * probe).mean(), new_inputs)
+    result = {}
+    for name, reference, candidate in zip(("q", "k", "v"), ref_grads, new_grads):
+        result[f"grad_{name}_cosine"] = float(F.cosine_similarity(
+            reference.reshape(1, -1), candidate.reshape(1, -1), dim=-1).item())
+        result[f"grad_{name}_nmse"] = float(nmse(reference, candidate))
+    result["grad_mean_cosine"] = statistics.fmean(
+        result[f"grad_{name}_cosine"] for name in ("q", "k", "v")
+    )
+    return result
+
+
 def fit_transfer(core, train, validation, args, checkpoint, key):
     core.train()
     optimizer = torch.optim.AdamW(core.parameters(), lr=args.lr, weight_decay=1e-4)
@@ -564,6 +586,7 @@ def main():
                    "selected_on_validation": winners[str(layer)] == record["candidate"],
                    "quality": quality_label(delta, low, high, len(values), args.nll_margin),
                    **evaluate_transfer(core, captures[layer], args.device),
+                   **gradient_fidelity(core, captures[layer][0], args.device),
                    **benchmark_kernels(core, captures[layer][0], args.device)}
             test_rows.append(row)
             for i, (value, ref) in enumerate(zip(values, teacher_nll)):

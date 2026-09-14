@@ -7,7 +7,7 @@ from transformers import LlamaConfig, LlamaForCausalLM
 
 from scripts.benchmark_cenn_research_layers import (
     benchmark_kernels, capture_samples, collect_documents, document_split,
-    evaluate_nll, fit_language_loss, fit_transfer, paired_interval,
+    evaluate_nll, fit_language_loss, fit_transfer, gradient_fidelity, paired_interval,
     quality_label, replace_attention,
 )
 from tinycenn_lm.research_layers import ResearchCeNNLayer
@@ -68,6 +68,8 @@ def test_layer_training_checkpoint_reload_and_perplexity_smoke(tmp_path, variant
     assert candidate == reloaded
     delta, low, high = paired_interval(candidate, baseline, repeats=100)
     assert all(torch.isfinite(torch.tensor(x)) for x in (delta, low, high))
+    gradients = gradient_fidelity(core, cache[0], device)
+    assert all(torch.isfinite(torch.tensor(v)) for v in gradients.values())
     metrics = benchmark_kernels(core, cache[0], device, repeats=2)
     assert metrics["prefill_ms"] > 0 and metrics["decode_step_ms"] > 0
 

@@ -1,5 +1,12 @@
 # TinyCeNN-LM on Google Colab
 
+**Testing new CeNN attention layers?** Use the
+[CeNN Research Layers Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/codex/cenn-research-layers-20260914/notebooks/CeNN_Research_Layers_Colab.ipynb)
+to compare KDA-inspired, Delta2 and Delta2-plus-window replacements with the
+original Transformer using held-out perplexity, output fidelity, recurrent state
+and measured kernel timing. See the [research protocol](RESEARCH_LAYERS.md).
+
+
 **Continuing a dense CeNN student that plateaued after 10M tokens?** Use
 [TinyCeNN_Optimized_Continue_Colab.ipynb](notebooks/TinyCeNN_Optimized_Continue_Colab.ipynb)
 and the [continuation guide](CONTINUATION.md). This is the Transformer-free

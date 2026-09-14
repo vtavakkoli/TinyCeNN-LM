@@ -107,3 +107,12 @@ def test_reject_invalid_configuration():
         ResearchCeNNLayer(5, 2, 8)
     with pytest.raises(ValueError):
         ResearchCeNNLayer(4, 2, 8, chunk_size=64)
+
+
+def test_single_kv_head_window_state_does_not_retain_full_prefix_storage():
+    model = ResearchCeNNLayer(2, 1, 8, 8, "cenn_delta2_window", window=4)
+    with torch.no_grad():
+        _, state = model(torch.randn(1, 2, 100, 8), torch.randn(1, 1, 100, 8),
+                         torch.randn(1, 1, 100, 8), return_state=True)
+    for cache in (state.keys, state.values):
+        assert cache.untyped_storage().nbytes() == cache.numel() * cache.element_size()
