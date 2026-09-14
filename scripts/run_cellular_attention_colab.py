@@ -90,8 +90,11 @@ def write_json(path: Path, value) -> None:
 
 def command_for(benchmark: Path, output_dir: Path, *, layers: str, variants: str,
                 seed: int, config: dict) -> list[str]:
+    # Launch as a module from the repository root. Executing the file directly
+    # makes sys.path[0] point at /scripts, which breaks imports such as
+    # `from scripts.benchmark_cenn_research_layers import ...` on Colab.
     command = [
-        sys.executable, "-u", str(benchmark),
+        sys.executable, "-u", "-m", "scripts.benchmark_cellular_attention",
         "--layers", layers,
         "--variants", variants,
         "--seed", str(seed),
@@ -109,6 +112,14 @@ def stream(command: list[str], *, cwd: Path, log_file: Path) -> int:
     env.setdefault("TOKENIZERS_PARALLELISM", "false")
     env.setdefault("HF_HUB_DISABLE_XET", "1")
     env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+    # Keep the repository importable in child processes regardless of the
+    # parent notebook's working directory or editable-install behavior.
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        str(cwd) if not existing_pythonpath
+        else str(cwd) + os.pathsep + existing_pythonpath
+    )
 
     log_file.parent.mkdir(parents=True, exist_ok=True)
     print("Command:", subprocess.list2cmdline(command), flush=True)
