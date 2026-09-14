@@ -7,8 +7,18 @@ import json
 import math
 import random
 import statistics
+import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+# When this file is executed by absolute path (as the Colab does), Python puts
+# only ``.../scripts`` on sys.path.  The shared benchmark helpers live in the
+# ``scripts`` package at the repository root, so make that root importable
+# before importing them.  This keeps both ``python script.py`` and
+# ``python -m scripts.benchmark_pdelta2_feature_lab`` working.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import torch
 
