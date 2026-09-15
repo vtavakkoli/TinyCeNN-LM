@@ -48,6 +48,22 @@ def test_full_attention_discovery_and_reject_sliding():
         raise AssertionError("Expected sliding layer replacement to be rejected")
 
 
+def test_wrapper_preserves_gemma3_attention_contract():
+    teacher = tiny_model()
+    original = teacher.model.layers[1].self_attn
+    student = build_student(teacher, [1], "cenn_partition", features=8, block_size=4, sinks=1)
+    wrapped = student.model.layers[1].self_attn
+    assert wrapped.is_sliding is False
+    assert wrapped.layer_idx == original.layer_idx == 1
+    assert wrapped.head_dim == original.head_dim
+    assert wrapped.num_key_value_groups == original.num_key_value_groups
+    assert wrapped.scaling == original.scaling
+    assert wrapped.attention_dropout == original.attention_dropout
+    assert wrapped.is_causal == original.is_causal
+    assert wrapped.attn_logit_softcapping == original.attn_logit_softcapping
+    assert wrapped.sliding_window == original.sliding_window is None
+
+
 def test_transformer_readout_starts_close_to_original():
     teacher = tiny_model()
     student = build_student(teacher, [1], "transformer_readout", features=8, block_size=4, sinks=1)
