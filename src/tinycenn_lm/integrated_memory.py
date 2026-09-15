@@ -36,7 +36,9 @@ class IntegratedCache(DynamicCache):
 
     def get_mask_sizes(self, cache_position, layer_idx):
         if layer_idx in self.memory_layers:
-            return self.get_seq_length(layer_idx) + cache_position.shape[0], 0
+            # Transformers 4.x passes positions; 5.x passes the query length.
+            query_length = cache_position.shape[0] if isinstance(cache_position, torch.Tensor) else cache_position
+            return self.get_seq_length(layer_idx) + query_length, 0
         return super().get_mask_sizes(cache_position, layer_idx)
 
     @property

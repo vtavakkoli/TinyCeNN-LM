@@ -147,3 +147,10 @@ def test_cli_starts_from_an_unrelated_directory(tmp_path):
                           cwd=tmp_path,env=env,capture_output=True,text=True,timeout=60)
     assert result.returncode==0,result.stderr
     assert '--train-contexts' in result.stdout
+
+
+def test_memory_cache_mask_sizes_accept_transformers4_and_5_arguments():
+    from tinycenn_lm.integrated_memory import IntegratedCache
+    cache=IntegratedCache([0])
+    assert cache.get_mask_sizes(torch.arange(5),0)==(5,0)
+    assert cache.get_mask_sizes(5,0)==(5,0)
