@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """FunctionGemma 270M: replace global full-attention layers with TinyCeNN memory."""
 import argparse
+import contextlib
 import json
 import math
 import platform
@@ -16,6 +17,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import torch
 import torch.nn.functional as F
+from transformers.cache_utils import DynamicCache
 from transformers.models.gemma3.modeling_gemma3 import apply_rotary_pos_emb, repeat_kv
 
 from scripts import benchmark_smollm2_integrated_memory as base
@@ -96,6 +98,95 @@ def joint_loss(student_logits, teacher_logits, targets, kl_weight=1., temperatur
 
 
 base.joint_loss = joint_loss
+
+
+def _nmse(reference, candidate):
+    reference = reference.float()
+    candidate = candidate.float()
+    return float((candidate - reference).square().mean() / reference.square().mean().clamp_min(1e-8))
+
+
+def _top1_agreement(reference, candidate):
+    return float((reference.argmax(-1) == candidate.argmax(-1)).float().mean())
+
+
+@torch.no_grad()
+def _full_and_cached_logits(model, ids, cache, split, precision, use_cenn_context):
+    manager = inference_mode(model, precision) if use_cenn_context else contextlib.nullcontext(model)
+    with manager:
+        full = model(input_ids=ids, use_cache=False).logits
+        first = model(input_ids=ids[:, :split], past_key_values=cache, use_cache=True).logits
+        pieces = [first]
+        for index in range(split, ids.shape[1]):
+            pieces.append(model(
+                input_ids=ids[:, index:index + 1], past_key_values=cache, use_cache=True
+            ).logits)
+        cached = torch.cat(pieces, dim=1)
+    return full, cached
+
+
+@torch.no_grad()
+def functiongemma_cache_equivalence(teacher, model, block, device, precision, block_size):
+    """Check CeNN cached/full drift relative to native FunctionGemma cached/full drift.
+
+    Gemma3 mixes global and sliding-window layers. In BF16, the native cached and
+    full SDPA paths are not bit-identical, so an absolute Llama-specific NMSE gate
+    can reject a valid hybrid cache. We therefore measure the native teacher on the
+    same tokens and permit only a small additional numerical budget. Top-1 agreement
+    prevents a low-NMSE result from hiding meaningful autoregressive changes.
+    """
+    length = min(len(block) - 1, 2 * block_size + 5)
+    ids = block[:length][None].to(device)
+    split = min(block_size + 1, length - 1)
+
+    teacher_cache = DynamicCache(config=teacher.config)
+    teacher_full, teacher_cached = _full_and_cached_logits(
+        teacher, ids, teacher_cache, split, precision, use_cenn_context=False
+    )
+    teacher_nmse = _nmse(teacher_full, teacher_cached)
+    teacher_top1 = _top1_agreement(teacher_full, teacher_cached)
+
+    candidate_cache = new_cache(model)
+    candidate_full, candidate_cached = _full_and_cached_logits(
+        model, ids, candidate_cache, split, precision, use_cenn_context=True
+    )
+    candidate_nmse = _nmse(candidate_full, candidate_cached)
+    candidate_top1 = _top1_agreement(candidate_full, candidate_cached)
+
+    # BF16 SDPA can differ slightly between one-shot and cached execution. Keep a
+    # small absolute floor, but scale the allowance with the native Gemma3 drift.
+    nmse_limit = max(1.5e-3, 4.0 * teacher_nmse + 2.5e-4)
+    top1_limit = max(0.98, teacher_top1 - 0.01)
+
+    metrics = {
+        "cached_logits_nmse": candidate_nmse,
+        "teacher_cached_logits_nmse": teacher_nmse,
+        "cache_nmse_excess": candidate_nmse - teacher_nmse,
+        "cache_equivalence_nmse_limit": nmse_limit,
+        "cached_top1_agreement": candidate_top1,
+        "teacher_cached_top1_agreement": teacher_top1,
+        "cache_equivalence_top1_limit": top1_limit,
+        "cache_test_tokens": length,
+    }
+    print("cache_equivalence:", json.dumps(metrics), flush=True)
+
+    if not all(math.isfinite(metrics[k]) for k in (
+        "cached_logits_nmse", "teacher_cached_logits_nmse", "cached_top1_agreement"
+    )):
+        raise RuntimeError(f"Non-finite FunctionGemma cache-equivalence metrics: {metrics}")
+    if candidate_nmse > nmse_limit:
+        raise RuntimeError(
+            "FunctionGemma cache equivalence failed: "
+            f"candidate NMSE={candidate_nmse:.6g}, native NMSE={teacher_nmse:.6g}, "
+            f"limit={nmse_limit:.6g}"
+        )
+    if candidate_top1 < top1_limit:
+        raise RuntimeError(
+            "FunctionGemma cache equivalence changed too many top-1 tokens: "
+            f"candidate agreement={candidate_top1:.4f}, native agreement={teacher_top1:.4f}, "
+            f"limit={top1_limit:.4f}"
+        )
+    return metrics
 
 
 def parse_args():
@@ -217,7 +308,9 @@ def main():
         del model
         if args.device.type == "cuda": torch.cuda.empty_cache()
         model = restore_student(teacher, torch.load(out/checkpoint, map_location="cpu", weights_only=True))
-        equivalence = base.cache_equivalence(model, blocks["validation"][0], args.device, args.precision, args.block_size)
+        equivalence = functiongemma_cache_equivalence(
+            teacher, model, blocks["validation"][0], args.device, args.precision, args.block_size
+        )
         remaining_full = len(available_full) if variant == "transformer_readout" else len(available_full)-len(layers)
         record = {"candidate":name,"variant":variant,"layers":layers,"matched_control":control,
             "checkpoint":checkpoint,"before_joint_validation_nll":before,"validation_nll":best,
@@ -244,7 +337,7 @@ def main():
     manifest["status"] = "completed"; write_json(out/"manifest.json", manifest)
     write_json(out/"progress.json", {"status":"completed","selected":selected})
     write_json(out/"integrated_report.json", {**manifest,"candidates":records,"rows":rows,"selected":selected,
-        "interpretation":"FunctionGemma/Gemma3 experiment replacing only original full-attention layers; 15 sliding-window layers remain unchanged. Selection is validation-only."})
+        "interpretation":"FunctionGemma/Gemma3 experiment replacing only original full-attention layers; 15 sliding-window layers remain unchanged. Selection is validation-only. Cache equivalence is judged relative to native Gemma3 cached/full numerical drift and top-1 agreement."})
     print(f"Completed: {out.resolve()}", flush=True)
 
 
