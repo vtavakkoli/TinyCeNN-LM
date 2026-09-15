@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -75,9 +76,17 @@ def test_memory_fusion_rejects_sliding_attention():
 
 def test_functiongemma_sequential_cli_help():
     repo = Path(__file__).resolve().parents[1]
+    # In Colab, importing tinycenn_lm installs the mandatory trainer backup.
+    # A --help subprocess is informational, not a training run, but the direct
+    # trainer fallback otherwise sees train_*.py and asks for HF_TOKEN before
+    # argparse can print help. Mark the nested smoke process as parent-covered so
+    # the CLI contract can be tested without remote credentials or network I/O.
+    env = dict(os.environ)
+    env["TINYCENN_PARENT_BACKUP_ACTIVE"] = "1"
     completed = subprocess.run(
         [sys.executable, str(repo / "scripts" / "train_functiongemma_memory_fusion_sequential.py"), "--help"],
         cwd=repo,
+        env=env,
         text=True,
         capture_output=True,
         check=True,
