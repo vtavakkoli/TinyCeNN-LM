@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Device-safe launcher for Qwen3.5 verification and Hugging Face release."""
+"""Device-safe, explicitly authenticated launcher for Qwen3.5 verification/HF release."""
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
+
+from huggingface_hub import get_token
 
 HERE = Path(__file__).resolve().parent
 release_path = HERE / "qwen35_release.py"
@@ -18,6 +21,9 @@ release = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = release
 spec.loader.exec_module(release)
 
+# ---------------------------------------------------------------------------
+# 1) Keep dynamically inserted recurrent modules on the model's device.
+# ---------------------------------------------------------------------------
 _original_replace = release.replace_full_attention_layers
 
 
@@ -43,4 +49,31 @@ def _device_safe_replace(model, config, indices):
 
 release.replace_full_attention_layers = _device_safe_replace
 print("[TinyCeNN][QWEN35 RELEASE DEVICE] Replacement device handoff active.", flush=True)
+
+# ---------------------------------------------------------------------------
+# 2) qwen35_release.py deliberately disables implicit HF-token use for public
+#    model downloads. For *upload*, however, HfApi must receive the token
+#    explicitly. Otherwise a notebook can be logged in while the child process
+#    still gets a 401/permission error.
+# ---------------------------------------------------------------------------
+command = sys.argv[1] if len(sys.argv) > 1 else None
+active_token = os.environ.get("HF_TOKEN") or get_token()
+
+if command == "upload":
+    if not active_token:
+        raise RuntimeError(
+            "No Hugging Face token is available to the upload subprocess. "
+            "Run the Colab upload cell and log in with a WRITE token."
+        )
+    os.environ["HF_TOKEN"] = active_token
+
+    _OriginalHfApi = release.HfApi
+
+    def _authenticated_hf_api(*args, **kwargs):
+        kwargs.setdefault("token", active_token)
+        return _OriginalHfApi(*args, **kwargs)
+
+    release.HfApi = _authenticated_hf_api
+    print("[TinyCeNN][HF AUTH] Explicit WRITE-token handoff active.", flush=True)
+
 release.main()
