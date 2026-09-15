@@ -148,10 +148,13 @@ def train_candidate(model, layer, core, blocks, train, validation_blocks, valida
 def benchmark_kernels(core, sample, device, native_dtype=torch.float32, compile_kernel=False):
     q, k, v, _ = (x.to(device) for x in sample)
     h = core.groups
+    native_q, native_k, native_v = (x.to(native_dtype) for x in (q, k, v))
     def exact(dtype):
+        typed_q, typed_k, typed_v = ((native_q, native_k, native_v) if dtype == native_dtype
+                                     else (q.float(), k.float(), v.float()))
         return lambda: F.scaled_dot_product_attention(
-            q.to(dtype), k.to(dtype).repeat_interleave(h, 1),
-            v.to(dtype).repeat_interleave(h, 1), is_causal=True)
+            typed_q, typed_k.repeat_interleave(h, 1),
+            typed_v.repeat_interleave(h, 1), is_causal=True)
     native_ms, native_peak = time_kernel(exact(native_dtype), device)
     fp32_ms, _ = time_kernel(exact(torch.float32), device)
     eager_ms, peak = time_kernel(lambda: core(q, k, v, apply_readout=False), device)
@@ -165,7 +168,6 @@ def benchmark_kernels(core, sample, device, native_dtype=torch.float32, compile_
             output, state = core(q[:, :, -1:], k[:, :, -1:], v[:, :, -1:],
                                  state=state, return_state=True, apply_readout=False)
         return output
-    native_q, native_k, native_v = (x.to(native_dtype) for x in (q, k, v))
     def native_decode():
         keys, values = native_k, native_v
         for _ in range(decode_tokens):
