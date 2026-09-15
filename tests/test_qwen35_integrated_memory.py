@@ -60,6 +60,34 @@ def test_transformer_readout_preserves_qwen_output_gate():
     torch.testing.assert_close(candidate, reference, atol=3e-5, rtol=3e-4)
 
 
+def test_cenn_cache_tracks_sequence_length_and_positions():
+    """Regression for Qwen3.5's first-full-attention-is-CeNN cache bug.
+
+    Qwen3.5 layer 0 is linear attention, so DynamicCache normally redirects
+    get_seq_length() to the first full-attention layer. If that layer is replaced
+    by CeNN and its DynamicLayer remains empty, decoding incorrectly reports
+    position 0 forever. The integrated cache must instead expose MemoryState.position.
+    """
+    teacher = tiny_model()
+    student = build_student(teacher, [3], "cenn_partition", features=8, block_size=4, sinks=1)
+    ids = torch.randint(0, 73, (1, 13))
+    cache = new_cache(student)
+    assert cache.get_seq_length() == 0
+    assert cache.get_seq_length(3) == 0
+
+    with inference_mode(student):
+        student(input_ids=ids[:, :7], past_key_values=cache, use_cache=True)
+        assert cache.get_seq_length() == 7
+        assert cache.get_seq_length(3) == 7
+        assert cache.get_mask_sizes(1, 3) == (8, 0)
+
+        for index in range(7, ids.shape[1]):
+            student(input_ids=ids[:, index:index+1], past_key_values=cache, use_cache=True)
+            expected = index + 1
+            assert cache.get_seq_length() == expected
+            assert cache.get_seq_length(3) == expected
+
+
 def test_cenn_cache_forward_and_checkpoint_reload():
     teacher = tiny_model()
     student = build_student(teacher, [3], "cenn_partition", features=8, block_size=4, sinks=1)
@@ -75,8 +103,9 @@ def test_cenn_cache_forward_and_checkpoint_reload():
         assert cached.shape == full.shape
         assert torch.isfinite(cached).all()
         assert cache.nbytes > 0
+        assert cache.get_seq_length() == ids.shape[1]
         agreement = (cached.argmax(-1) == full.argmax(-1)).float().mean()
-        assert float(agreement) >= 0.70
+        assert float(agreement) >= 0.90
 
     payload = adapter_payload(student, {"test": True})
     recovered = restore_student(teacher, payload)
