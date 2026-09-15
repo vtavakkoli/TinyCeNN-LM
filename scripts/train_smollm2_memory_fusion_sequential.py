@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import random
 import time
 from contextlib import nullcontext
@@ -21,7 +20,6 @@ from tinycenn_lm.smollm2_memory_fusion import (
     SmolMemoryFusionConfig,
     parameter_summary,
     replace_attention_layers,
-    replace_all_attention,
     structural_summary,
 )
 
@@ -502,6 +500,7 @@ def train_one_replacement(
     amp,
 ) -> dict:
     trainable = freeze_current_layer_only(student, layer_idx)
+    student.train()
     optimizer = make_optimizer(trainable, args.layer_lr, device)
     scaler = torch.amp.GradScaler(
         "cuda", enabled=(device.type == "cuda" and choose_dtype(device) == torch.float16)
@@ -577,6 +576,7 @@ def train_one_replacement(
                 teacher, student, ids, layer_idx, amp
             )
             current_probe_nll = probe_nll(student, probe_blocks, device, amp)
+            student.train()
             incremental = current_probe_nll - pre_replacement_probe_nll
             cumulative = current_probe_nll - teacher_probe_nll
             passed = acceptance_passes(
