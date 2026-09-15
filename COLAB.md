@@ -1,5 +1,7 @@
 # TinyCeNN-LM on Google Colab
 
+**Optimized memory V2:** [Open the new Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/CeNN_Optimized_Memory_V2_Colab.ipynb) to test parallel normalized memory, disjoint sink/local attention, and fused ridge readouts against original and adapted Transformers. Includes individual and joint layer tests, Drive checkpoints, and measured quality/speed/state gates. See [the derivation and protocol](OPTIMIZED_MEMORY.md).
+
 **Testing new CeNN attention layers?** Use the
 [CeNN Research Layers Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/codex/cenn-research-layers-20260914/notebooks/CeNN_Research_Layers_Colab.ipynb)
 to compare KDA-inspired, Delta2 and Delta2-plus-window replacements with the

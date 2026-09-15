@@ -9,8 +9,14 @@ import platform
 import random
 import statistics
 import subprocess
+import sys
 import time
 from pathlib import Path
+
+# Support invocation by absolute path from a notebook or any working directory.
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 
 import torch
 import torch.nn.functional as F
@@ -18,9 +24,58 @@ import torch.nn.functional as F
 from tinycenn_lm.optimized_memory import OptimizedMemory, VARIANTS, ridge_calibrate
 from scripts.benchmark_cenn_research_layers import (
     write_json, write_csv, save_checkpoint, nmse, capture_samples, evaluate_nll,
-    evaluate_transfer, fit_transfer, fit_language_loss, replace_attention,
+    evaluate_transfer, fit_transfer, fit_language_loss, project_qkv,
+    replace_attention as unfused_replace_attention,
     paired_interval, quality_label, gradient_fidelity, time_kernel,
 )
+
+
+class FusedReadoutReplacement(torch.nn.Module):
+    """Inference-only folding: O_new = O blockdiag(R)^T, for row-vector y R."""
+    def __init__(self, original, core, heads, kv_heads):
+        super().__init__()
+        self.original, self.core = original, core
+        self.heads, self.kv_heads = heads, kv_heads
+        with torch.no_grad():
+            weight = original.o_proj.weight.float().reshape(-1, heads, core.head_dim)
+            fused = torch.einsum("ohd,hkd->ohk", weight, core.readout.float())
+            self.register_buffer("fused_weight", fused.reshape_as(original.o_proj.weight).to(
+                original.o_proj.weight.dtype))
+
+    def forward(self, hidden_states, position_embeddings=None, attention_mask=None, **kwargs):
+        if torch.is_grad_enabled():
+            raise RuntimeError("Fused wrapper is inference-only; train through the unfused wrapper")
+        if position_embeddings is None or any(kwargs.get(key) is not None for key in
+                                             ("past_key_values", "past_key_value")):
+            raise ValueError("Use full unpadded Llama blocks without a generation cache")
+        if kwargs.get("use_cache", False):
+            raise ValueError("Use use_cache=False")
+        if attention_mask is not None and (
+            attention_mask.ndim != 4 or attention_mask.shape[-1] != hidden_states.shape[1]
+            or bool((attention_mask[..., -1, :] < 0).any())
+        ):
+            raise ValueError("Only unpadded full causal blocks are supported")
+        q, k, v = project_qkv(self.original, hidden_states, position_embeddings,
+                              self.heads, self.kv_heads)
+        output = self.core(q, k, v, apply_readout=False).transpose(1, 2).reshape(hidden_states.shape)
+        return F.linear(output.to(hidden_states.dtype), self.fused_weight,
+                        self.original.o_proj.bias), None
+
+
+@contextlib.contextmanager
+def replace_attention(model, index, core):
+    if core is None:
+        with unfused_replace_attention(model, index, None) as wrapper:
+            yield wrapper
+        return
+    original = model.model.layers[index].self_attn
+    wrapper = FusedReadoutReplacement(original, core, model.config.num_attention_heads,
+                                      model.config.num_key_value_heads)
+    model.model.layers[index].self_attn = wrapper
+    try:
+        yield wrapper
+    finally:
+        model.model.layers[index].self_attn = original
 
 
 def collect_documents(rows, tokenizer, counts, length, max_documents=100000, excluded=None):
@@ -99,15 +154,30 @@ def benchmark_kernels(core, sample, device, native_dtype=torch.float32, compile_
             v.to(dtype).repeat_interleave(h, 1), is_causal=True)
     native_ms, native_peak = time_kernel(exact(native_dtype), device)
     fp32_ms, _ = time_kernel(exact(torch.float32), device)
-    eager_ms, peak = time_kernel(lambda: core(q, k, v), device)
+    eager_ms, peak = time_kernel(lambda: core(q, k, v, apply_readout=False), device)
     _, final = core(q, k, v, return_state=True)
-    _, prefix = core(q[:, :, :-1], k[:, :, :-1], v[:, :, :-1], return_state=True)
-    candidate_step = lambda: core(q[:, :, -1:], k[:, :, -1:], v[:, :, -1:], state=prefix)
-    native_step = lambda: F.scaled_dot_product_attention(
-        q[:, :, -1:].to(native_dtype), k.to(native_dtype).repeat_interleave(h, 1),
-        v.to(native_dtype).repeat_interleave(h, 1), is_causal=False)
-    step_ms, _ = time_kernel(candidate_step, device)
-    reference_step_ms, _ = time_kernel(native_step, device)
+    # Measure a whole block of stateful steps, including the costly retirement
+    # boundary. Reusing the last Q/K/V is a timing workload, not generated text.
+    decode_tokens = core.block_size
+    def candidate_decode():
+        state = final
+        for _ in range(decode_tokens):
+            output, state = core(q[:, :, -1:], k[:, :, -1:], v[:, :, -1:],
+                                 state=state, return_state=True, apply_readout=False)
+        return output
+    native_q, native_k, native_v = (x.to(native_dtype) for x in (q, k, v))
+    def native_decode():
+        keys, values = native_k, native_v
+        for _ in range(decode_tokens):
+            keys = torch.cat((keys, native_k[:, :, -1:]), dim=2)
+            values = torch.cat((values, native_v[:, :, -1:]), dim=2)
+            output = F.scaled_dot_product_attention(
+                native_q[:, :, -1:], keys.repeat_interleave(h, 1),
+                values.repeat_interleave(h, 1), is_causal=False)
+        return output
+    step_ms, _ = time_kernel(candidate_decode, device)
+    reference_step_ms, _ = time_kernel(native_decode, device)
+    step_ms, reference_step_ms = step_ms / decode_tokens, reference_step_ms / decode_tokens
     kv_native = 2 * k.numel() * torch.empty((), dtype=native_dtype).element_size()
     result = {
         "prefill_ms": eager_ms, "transformer_native_prefill_ms": native_ms,
@@ -119,13 +189,15 @@ def benchmark_kernels(core, sample, device, native_dtype=torch.float32, compile_
         "transformer_peak_extra_bytes": native_peak,
         "native_reference_dtype": str(native_dtype), "candidate_compute_dtype": core.compute_dtype,
         "state_dtype": "float32", "compiled_status": "not_requested",
+        "readout_fused_into_o": True,
+        "decode_tokens_averaged": decode_tokens,
     }
     if compile_kernel:
         try:
             start = time.perf_counter()
-            compiled = torch.compile(core, dynamic=False)
+            compiled = torch.compile(lambda q, k, v: core(q, k, v, apply_readout=False), dynamic=False)
             actual = compiled(q, k, v)
-            torch.testing.assert_close(actual, core(q, k, v), atol=0.005, rtol=0.005)
+            torch.testing.assert_close(actual, core(q, k, v, apply_readout=False), atol=0.005, rtol=0.005)
             result["compile_seconds"] = time.perf_counter() - start
             ms, _ = time_kernel(lambda: compiled(q, k, v), device)
             result.update(compiled_status="validated", compiled_prefill_ms=ms,
@@ -307,6 +379,7 @@ def main():
         "model_revision": model_sha, "dataset_revision": data_sha,
         "source_commit": git, "document_hashes": hashes,
         "unique_train_tokens": args.train_documents * args.context,
+        "ridge_training_token_presentations": args.train_documents * args.context,
         "transfer_token_presentations_per_candidate": args.steps * args.context,
         "lm_token_presentations_per_candidate": args.lm_steps * args.context,
         "python": platform.python_version(), "torch": torch.__version__,
@@ -457,9 +530,10 @@ def main():
         "interpretation": (
             "Only held-out next-token NLL supports a task-quality comparison. "
             "Joint composition is tested, but it is not a fully replaced model or proof of superiority. "
-            "training-seed robustness, or production throughput. Timing is a float32 "
-            "PyTorch kernel microbenchmark on one cached document, including feature maps and calibration, "
-            "excluding Q/K/V/O. Native-precision and FP32 SDPA controls are both reported."
+            "It does not establish training-seed robustness or production throughput. Timing is a "
+            "PyTorch kernel microbenchmark on one cached document, including feature maps, "
+            "excluding Q/K/V/O; calibration is folded into O for inference. "
+            "Native-precision and FP32 SDPA controls are both reported."
         ),
     })
     print(f"Completed. Results: {outdir.resolve()}", flush=True)

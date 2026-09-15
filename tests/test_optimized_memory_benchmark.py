@@ -66,6 +66,22 @@ def test_complete_v2_run_selects_before_joint_test_and_preserves_base(tmp_path, 
         assert (root / candidate["checkpoint"]).is_file()
     assert (root / "optimized_memory_summary.csv").is_file()
     assert (root / "test_document_nll.csv").is_file()
+    # The pinned Colab CI profile includes plotting dependencies. Execute the
+    # actual notebook results cell on this complete offline run, including joint rows.
+    import importlib.util
+    from pathlib import Path
+    if all(importlib.util.find_spec(name) for name in ("pandas", "matplotlib")):
+        import matplotlib
+        matplotlib.use("Agg")
+        notebook_path = Path(__file__).resolve().parents[1] / "notebooks/CeNN_Optimized_Memory_V2_Colab.ipynb"
+        notebook = json.loads(notebook_path.read_text())
+        cells = [c for c in notebook["cells"] if "results" in c.get("metadata", {}).get("tags", [])]
+        assert len(cells) == 1
+        for cell in cells:
+            exec(compile("".join(cell["source"]), str(notebook_path), "exec"),
+                 {"OUT": root, "json": json, "display": lambda *args: None})
+        assert (root / "selected_decisions.csv").is_file()
+        assert (root / "comparison-layer-1.png").stat().st_size > 1000
 
 
 def test_previous_manifest_hashes_are_excluded():
@@ -78,3 +94,34 @@ def test_previous_manifest_hashes_are_excluded():
     excluded = set(sum(first.values(), []))
     _, second = benchmark.collect_documents(rows, Tokenizer(), counts, 8, excluded=excluded)
     assert not excluded.intersection(sum(second.values(), []))
+
+
+def test_folding_readout_preserves_full_model_logits():
+    torch.manual_seed(2027)
+    config = LlamaConfig(vocab_size=41, hidden_size=32, intermediate_size=48,
+                         num_hidden_layers=2, num_attention_heads=4, num_key_value_heads=2)
+    config._attn_implementation = "sdpa"
+    model = LlamaForCausalLM(config).eval()
+    core = benchmark.OptimizedMemory(4, 2, 8, 8, block_size=4)
+    with torch.no_grad():
+        core.readout.add_(0.05 * torch.randn_like(core.readout))
+        ids = torch.randint(0, 41, (1, 17))
+        with benchmark.unfused_replace_attention(model, 1, core):
+            ordinary = model(input_ids=ids, use_cache=False).logits
+        with benchmark.replace_attention(model, 1, core):
+            folded = model(input_ids=ids, use_cache=False).logits
+    torch.testing.assert_close(folded, ordinary, atol=3e-6, rtol=3e-5)
+
+
+def test_cli_works_outside_repository(tmp_path):
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+    script = Path(benchmark.__file__).resolve()
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    result = subprocess.run([sys.executable, str(script), "--help"], cwd=tmp_path,
+                            env=env, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert "--exclude-manifest" in result.stdout
