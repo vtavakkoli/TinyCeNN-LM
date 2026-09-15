@@ -341,13 +341,13 @@ def main():
     random.seed(args.seed)
     args.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if args.compute_dtype == "auto":
-        args.compute_dtype = ("bfloat16" if torch.cuda.is_bf16_supported() else "float16"
+        args.compute_dtype = ("bfloat16" if (torch.cuda.get_device_capability()[0] >= 8) else "float16"
                               ) if args.device.type == "cuda" else "float32"
     if args.device.type == "cpu":
         args.compute_dtype = "float32"
     if args.device.type == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = False
-    dtype = (torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    dtype = (torch.bfloat16 if (torch.cuda.get_device_capability()[0] >= 8) else torch.float16
              ) if args.device.type == "cuda" else torch.float32
     api = HfApi()
     model_sha = api.model_info(args.base_model, revision=args.model_revision).sha

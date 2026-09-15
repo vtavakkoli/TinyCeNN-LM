@@ -1,5 +1,7 @@
 # TinyCeNN-LM on Google Colab
 
+**SmolLM2 integration V3:** [Open the full-model Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/SmolLM2_Integrated_Memory_V3_Colab.ipynb) to jointly train the strongest V2 partition mixers in SmolLM2-135M and test cached generation, held-out quality and total model cache. Includes conservative/expanded replacements and matched adapted Transformer controls. [Results assessment and protocol](SMOLLM2_INTEGRATED_MEMORY.md).
+
 **Optimized memory V2:** [Open the new Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/CeNN_Optimized_Memory_V2_Colab.ipynb) to test parallel normalized memory, disjoint sink/local attention, and fused ridge readouts against original and adapted Transformers. Includes individual and joint layer tests, Drive checkpoints, and measured quality/speed/state gates. See [the derivation and protocol](OPTIMIZED_MEMORY.md).
 
 **Testing new CeNN attention layers?** Use the
