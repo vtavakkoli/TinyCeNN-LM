@@ -73,6 +73,7 @@ class MemoryFusionGemma3Attention(nn.Module):
         self.num_heads = int(text_config.num_attention_heads)
         self.num_key_value_heads = int(text_config.num_key_value_heads)
         self.head_dim = int(getattr(original_attn, "head_dim", text_config.head_dim))
+        self.attention_width = self.num_heads * self.head_dim
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
         self.scaling = float(getattr(original_attn, "scaling", self.head_dim ** -0.5))
         self.attention_dropout = float(getattr(original_attn, "attention_dropout", 0.0))
@@ -120,7 +121,6 @@ class MemoryFusionGemma3Attention(nn.Module):
         if attention_mask is not None:
             if attention_mask.ndim != 4 or attention_mask.shape[-1] != seq_len:
                 raise ValueError("only unpadded full causal blocks are supported")
-            # The final causal row is fully visible for an unpadded sequence.
             if bool((attention_mask[..., -1, :] < -1e4).any()):
                 raise ValueError("padded batches are not supported")
 
@@ -138,7 +138,9 @@ class MemoryFusionGemma3Attention(nn.Module):
 
         core_out = self.core(q.float(), k.float(), v.float())
         self.last_core_output = core_out
-        flat = core_out.transpose(1, 2).reshape(bsz, seq_len, self.hidden_size)
+        # Gemma3 can use num_heads * head_dim != hidden_size (FunctionGemma does).
+        # The original o_proj maps the attention width back to hidden_size.
+        flat = core_out.transpose(1, 2).reshape(bsz, seq_len, self.attention_width)
         return self.o_proj(flat.to(hidden_states.dtype)), None
 
 
