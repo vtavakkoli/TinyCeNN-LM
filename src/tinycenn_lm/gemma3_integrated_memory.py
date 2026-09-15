@@ -73,13 +73,37 @@ class Gemma3IntegratedCache(DynamicCache):
 
 
 class Gemma3IntegratedAttention(nn.Module):
-    """Full-attention Gemma 3 layer replaced by a TinyCeNN memory core."""
+    """Full-attention Gemma 3 layer replaced by a TinyCeNN memory core.
+
+    Gemma3DecoderLayer inspects attributes on ``self_attn`` before calling it
+    (most importantly ``is_sliding`` to select local vs global RoPE).  Mirror
+    the lightweight structural attributes of Gemma3Attention so replacing the
+    module preserves the Transformers 4.57.x decoder contract.
+    """
 
     def __init__(self, original, core, layer_idx):
         super().__init__()
         self.original = original
         self.core = core
         self.layer_idx = layer_idx
+
+        # Structural Gemma3Attention API used by Gemma3DecoderLayer and by
+        # attention tooling.  These are plain metadata values, not duplicate
+        # module registrations; Q/K/V/O and RMSNorm modules remain under
+        # ``self.original`` only.
+        self.is_sliding = bool(original.is_sliding)
+        self.config = original.config
+        self.head_dim = original.head_dim
+        self.num_key_value_groups = original.num_key_value_groups
+        self.scaling = original.scaling
+        self.attention_dropout = original.attention_dropout
+        self.is_causal = original.is_causal
+        self.attn_logit_softcapping = original.attn_logit_softcapping
+        self.sliding_window = original.sliding_window
+
+        if self.is_sliding:
+            raise ValueError("Gemma3IntegratedAttention only supports full-attention layers")
+
         self.register_buffer("fused_weight", None, persistent=False)
 
     def fuse(self, enabled=True):
@@ -114,7 +138,7 @@ class Gemma3IntegratedAttention(nn.Module):
         if self.fused_weight is not None and torch.is_grad_enabled():
             raise RuntimeError("Unfuse the readout before training")
 
-        if getattr(self.original, "is_sliding", False):
+        if self.is_sliding:
             raise RuntimeError("TinyCeNN FunctionGemma V1 only supports replacing full-attention layers")
 
         if attention_mask is not None:
@@ -145,7 +169,7 @@ class Gemma3IntegratedAttention(nn.Module):
                 repeat_kv(v, h // hk),
                 attn_mask=attention_mask,
                 is_causal=attention_mask is None and t > 1,
-                scale=float(self.original.scaling),
+                scale=float(self.scaling),
             )
             if self.fused_weight is None:
                 output = self.core.calibrate(output.float())
@@ -197,6 +221,10 @@ def build_student(teacher, layers, variant="cenn_partition", features=64, block_
             raise ValueError(
                 f"Layer {index} is sliding_attention. FunctionGemma V1 intentionally replaces only full_attention layers."
             )
+        # FunctionGemma uses query_pre_attn_scalar == head_dim (256), so its
+        # native attention scale matches the OptimizedMemory softmax scale.
+        # Keep this guard explicit for future Gemma3 checkpoints where that
+        # assumption may not hold.
         expected_scale = original.head_dim ** -0.5
         if abs(float(original.scaling) - float(expected_scale)) > 1e-8:
             raise ValueError(
