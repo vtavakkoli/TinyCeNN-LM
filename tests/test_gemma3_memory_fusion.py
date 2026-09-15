@@ -25,11 +25,13 @@ def tiny_model():
         num_hidden_layers=3,
         num_attention_heads=4,
         num_key_value_heads=1,
-        head_dim=16,
+        # Deliberately not hidden_size / num_heads. FunctionGemma also uses an
+        # attention projection width different from hidden_size.
+        head_dim=20,
         max_position_embeddings=128,
         sliding_window=16,
         layer_types=["sliding_attention", "full_attention", "sliding_attention"],
-        query_pre_attn_scalar=16,
+        query_pre_attn_scalar=20,
         rope_theta=1000000.0,
         rope_local_base_freq=10000.0,
         attention_bias=False,
@@ -45,7 +47,10 @@ def test_memory_fusion_replaces_only_full_attention_and_runs():
     assert full_attention_layers(model) == [1]
     cfg = Gemma3MemoryFusionConfig(feature_dim=8, memory_rank=8, dilations=(1, 2), shifted_window=4)
     replace_attention_layers(model, cfg, [1])
-    assert isinstance(model.model.layers[1].self_attn, MemoryFusionGemma3Attention)
+    wrapped = model.model.layers[1].self_attn
+    assert isinstance(wrapped, MemoryFusionGemma3Attention)
+    assert wrapped.attention_width == 80
+    assert wrapped.hidden_size == 64
     summary = structural_summary(model)
     assert summary["memory_fusion_layers"] == [1]
     assert summary["remaining_full_attention_layers"] == []
