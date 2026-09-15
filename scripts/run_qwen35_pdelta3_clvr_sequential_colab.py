@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""Google-Drive-aware Colab launcher for Qwen3.5 PDelta3-CLVR experiments."""
+"""Google-Drive-aware Colab launcher for Qwen3.5 PDelta3-CLVR experiments.
+
+Besides the Transformers/Qwen3.5 preflight, this launcher makes dynamically
+created PDelta3 replacement modules device-safe. Qwen is moved to CUDA before
+replacement, while FrontierPDelta3Layer is constructed on CPU by default; the
+replacement must therefore be moved to the original attention device before its
+first forward pass.
+"""
 from __future__ import annotations
 
+import importlib.util
 import os
-import runpy
 import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -80,4 +87,48 @@ if on_drive:
 target = Path(__file__).with_name("train_qwen35_pdelta3_clvr_sequential.py")
 if not target.exists():
     raise FileNotFoundError(target)
-runpy.run_path(str(target), run_name="__main__")
+
+# Import the trainer as a module rather than executing a second copy with runpy.
+# This lets all trainer paths (fresh replacement, resume, in-progress resume) use
+# the same corrected replacement function.
+spec = importlib.util.spec_from_file_location("tinycenn_qwen35_trainer", target)
+if spec is None or spec.loader is None:
+    raise ImportError(f"Cannot import Qwen3.5 trainer from {target}")
+trainer = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = trainer
+spec.loader.exec_module(trainer)
+
+_original_replace = trainer.replace_full_attention_layers
+
+
+def _device_safe_replace(model, config, indices):
+    wrappers = _original_replace(model, config, indices)
+    fallback_device = next(model.parameters()).device
+    for wrapper in wrappers:
+        q_weight = getattr(getattr(wrapper, "q_proj", None), "weight", None)
+        target_device = q_weight.device if q_weight is not None else fallback_device
+
+        # Move the newly created recurrent core and local-gate parameters to the
+        # same device without changing their intentionally mixed dtypes.
+        wrapper.to(device=target_device)
+
+        wrong = [
+            f"{name}:{param.device}"
+            for name, param in wrapper.named_parameters()
+            if param.device != target_device
+        ]
+        if wrong:
+            raise RuntimeError(
+                f"Qwen3.5 replacement layer {getattr(wrapper, 'layer_idx', '?')} "
+                f"has parameters on the wrong device; expected {target_device}: {wrong[:8]}"
+            )
+    return wrappers
+
+
+trainer.replace_full_attention_layers = _device_safe_replace
+print(
+    "[TinyCeNN][QWEN35 DEVICE] Dynamic PDelta3 replacements follow the Qwen layer device.",
+    flush=True,
+)
+
+raise SystemExit(trainer.main())
