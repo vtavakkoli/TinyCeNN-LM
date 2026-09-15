@@ -1,7 +1,6 @@
 import torch
 from transformers import Gemma3ForCausalLM, Gemma3TextConfig
 
-from scripts.benchmark_functiongemma_integrated_memory import functiongemma_cache_equivalence
 from tinycenn_lm.gemma3_integrated_memory import (
     adapter_payload,
     build_student,
@@ -106,13 +105,37 @@ def test_cenn_cache_matches_full_and_checkpoint_reload():
 
 
 def test_functiongemma_cache_gate_reports_native_baseline_and_passes_clean_model():
-    teacher = tiny_model()
-    student = build_student(teacher, [1], "cenn_partition", features=8, block_size=4, sinks=1)
-    block = torch.randint(0, 73, (32,))
-    metrics = functiongemma_cache_equivalence(
-        teacher, student, block, torch.device("cpu"), "float32", block_size=4
+    # benchmark_functiongemma_integrated_memory temporarily specializes helpers in
+    # the shared SmolLM2 benchmark module. Import it only inside this test and
+    # restore those globals afterwards so test collection/execution order cannot
+    # contaminate the SmolLM2 integration tests.
+    from scripts import benchmark_smollm2_integrated_memory as smol_base
+
+    patched_names = (
+        "native_dtype",
+        "build_student",
+        "wrappers",
+        "inference_mode",
+        "adapter_payload",
+        "restore_student",
+        "new_cache",
+        "greedy_generate",
+        "joint_loss",
     )
-    assert metrics["cached_logits_nmse"] <= metrics["cache_equivalence_nmse_limit"]
-    assert metrics["cached_top1_agreement"] >= metrics["cache_equivalence_top1_limit"]
-    assert metrics["teacher_cached_logits_nmse"] >= 0
-    assert 0 <= metrics["teacher_cached_top1_agreement"] <= 1
+    original = {name: getattr(smol_base, name) for name in patched_names}
+    try:
+        from scripts.benchmark_functiongemma_integrated_memory import functiongemma_cache_equivalence
+
+        teacher = tiny_model()
+        student = build_student(teacher, [1], "cenn_partition", features=8, block_size=4, sinks=1)
+        block = torch.randint(0, 73, (32,))
+        metrics = functiongemma_cache_equivalence(
+            teacher, student, block, torch.device("cpu"), "float32", block_size=4
+        )
+        assert metrics["cached_logits_nmse"] <= metrics["cache_equivalence_nmse_limit"]
+        assert metrics["cached_top1_agreement"] >= metrics["cache_equivalence_top1_limit"]
+        assert metrics["teacher_cached_logits_nmse"] >= 0
+        assert 0 <= metrics["teacher_cached_top1_agreement"] <= 1
+    finally:
+        for name, value in original.items():
+            setattr(smol_base, name, value)
