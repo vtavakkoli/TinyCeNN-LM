@@ -2,11 +2,50 @@
 """Google-Drive-aware Colab launcher for Qwen3.5 PDelta3-CLVR experiments."""
 from __future__ import annotations
 
-import os, runpy, sys
+import os
+import runpy
+import sys
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+
+
+def _version_tuple(value: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for token in value.split("."):
+        digits = "".join(ch for ch in token if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def _qwen35_preflight() -> None:
+    try:
+        installed = version("transformers")
+    except PackageNotFoundError as exc:
+        raise RuntimeError(
+            "Transformers is not installed. Run the Setup cell in the Qwen3.5 Colab first."
+        ) from exc
+
+    if _version_tuple(installed) < (5, 2, 0):
+        raise RuntimeError(
+            f"Qwen3.5 requires a newer Transformers build; found {installed}. "
+            "Run the updated Setup cell, which installs transformers==5.17.0."
+        )
+
+    try:
+        from transformers import Qwen3_5ForCausalLM  # noqa: F401
+        from transformers.models.qwen3_5.modeling_qwen3_5 import apply_rotary_pos_emb  # noqa: F401
+    except Exception as exc:
+        raise RuntimeError(
+            f"Transformers {installed} is installed but Qwen3.5 APIs are unavailable. "
+            "Re-run the updated Setup cell before training."
+        ) from exc
+
+    print(f"[TinyCeNN][QWEN35 PREFLIGHT] transformers={installed} APIs=OK", flush=True)
 
 
 def _arg_value(name: str) -> str | None:
@@ -16,6 +55,8 @@ def _arg_value(name: str) -> str | None:
         return None
     return sys.argv[idx + 1] if idx + 1 < len(sys.argv) else None
 
+
+_qwen35_preflight()
 
 output_dir = _arg_value("--output-dir")
 on_drive = False
