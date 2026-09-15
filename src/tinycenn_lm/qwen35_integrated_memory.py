@@ -32,6 +32,41 @@ class Qwen35IntegratedCache(DynamicCache):
         self.memory_layers = frozenset(int(x) for x in memory_layers)
         self.memory_states = {}
 
+    def _memory_seq_length(self, layer_idx=None):
+        if layer_idx is not None:
+            state = self.memory_states.get(int(layer_idx))
+            return int(state.position) if state is not None else 0
+        return max((int(state.position) for state in self.memory_states.values()), default=0)
+
+    def get_seq_length(self, layer_idx=0):
+        """Return the real sequence length even when the first attention layer is CeNN.
+
+        Qwen3.5 layer 0 is linear attention. Hugging Face's DynamicCache therefore
+        redirects the default get_seq_length() call to the first full-attention
+        cache layer. When that first full-attention layer (layer 3 in Qwen3.5-0.8B)
+        is replaced by TinyCeNN, its DynamicLayer is intentionally never updated;
+        the position lives in memory_states instead. Without this override, cached
+        decoding repeatedly reports length 0 and reuses incorrect RoPE positions.
+        """
+        if layer_idx in self.memory_layers:
+            return self._memory_seq_length(layer_idx)
+        if layer_idx == 0:
+            memory_length = self._memory_seq_length()
+            try:
+                native_length = int(super().get_seq_length(layer_idx))
+            except (ValueError, StopIteration):
+                native_length = 0
+            return max(memory_length, native_length)
+        return super().get_seq_length(layer_idx)
+
+    def get_mask_sizes(self, query_length, layer_idx):
+        """Mirror get_seq_length() for causal-mask construction at CeNN layers."""
+        if layer_idx in self.memory_layers:
+            return self._memory_seq_length(layer_idx) + int(query_length), 0
+        if layer_idx == 0 and self.memory_states:
+            return self.get_seq_length(0) + int(query_length), 0
+        return super().get_mask_sizes(query_length, layer_idx)
+
     @staticmethod
     def _bytes(value):
         if isinstance(value, torch.Tensor):
