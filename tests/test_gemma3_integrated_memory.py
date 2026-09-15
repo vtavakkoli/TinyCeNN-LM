@@ -1,6 +1,7 @@
 import torch
 from transformers import Gemma3ForCausalLM, Gemma3TextConfig
 
+from scripts.benchmark_functiongemma_integrated_memory import functiongemma_cache_equivalence
 from tinycenn_lm.gemma3_integrated_memory import (
     adapter_payload,
     build_student,
@@ -102,3 +103,16 @@ def test_cenn_cache_matches_full_and_checkpoint_reload():
             atol=0,
             rtol=0,
         )
+
+
+def test_functiongemma_cache_gate_reports_native_baseline_and_passes_clean_model():
+    teacher = tiny_model()
+    student = build_student(teacher, [1], "cenn_partition", features=8, block_size=4, sinks=1)
+    block = torch.randint(0, 73, (32,))
+    metrics = functiongemma_cache_equivalence(
+        teacher, student, block, torch.device("cpu"), "float32", block_size=4
+    )
+    assert metrics["cached_logits_nmse"] <= metrics["cache_equivalence_nmse_limit"]
+    assert metrics["cached_top1_agreement"] >= metrics["cache_equivalence_top1_limit"]
+    assert metrics["teacher_cached_logits_nmse"] >= 0
+    assert 0 <= metrics["teacher_cached_top1_agreement"] <= 1
