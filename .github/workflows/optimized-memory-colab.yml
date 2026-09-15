@@ -1,0 +1,58 @@
+name: Optimized memory V2 Colab
+
+on:
+  push:
+    paths:
+      - "src/tinycenn_lm/optimized_memory.py"
+      - "scripts/benchmark_cenn_optimized_memory.py"
+      - "scripts/benchmark_cenn_research_layers.py"
+      - "tests/test_optimized_memory*.py"
+      - "notebooks/CeNN_Optimized_Memory_V2_Colab.ipynb"
+      - ".github/workflows/optimized-memory-colab.yml"
+  pull_request:
+    paths:
+      - "src/tinycenn_lm/optimized_memory.py"
+      - "scripts/benchmark_cenn_optimized_memory.py"
+      - "scripts/benchmark_cenn_research_layers.py"
+      - "tests/test_optimized_memory*.py"
+      - "notebooks/CeNN_Optimized_Memory_V2_Colab.ipynb"
+      - ".github/workflows/optimized-memory-colab.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  colab-dependencies:
+    env:
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install the notebook dependency profile on CPU
+        run: |
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install "transformers==4.57.6" "datasets>=3,<5" pandas matplotlib pytest nbformat
+          python -m pip install -e . --no-deps
+      - name: Recurrence and real Llama integration checks
+        run: python -m pytest -q tests/test_optimized_memory.py tests/test_optimized_memory_benchmark.py
+      - name: Validate notebook schema and all code cells
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import nbformat
+
+          path = Path("notebooks/CeNN_Optimized_Memory_V2_Colab.ipynb")
+          notebook = nbformat.read(path, as_version=4)
+          nbformat.validate(notebook)
+          for index, cell in enumerate(notebook.cells):
+              if cell.cell_type == "code":
+                  assert cell.execution_count is None and not cell.outputs
+                  compile(cell.source, f"{path}:cell_{index}", "exec")
+          print("Notebook schema and code cells validated.")
+          PY
