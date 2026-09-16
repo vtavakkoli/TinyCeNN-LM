@@ -1,0 +1,1 @@
+Qwen3.5 Memory Fusion Sequential V2: preserve positional position_embeddings/attention_mask during attention replay; persist Colab trainer failure status; verify notebook uses V2 trainer.
