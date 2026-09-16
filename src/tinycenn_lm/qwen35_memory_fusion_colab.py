@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -17,24 +18,44 @@ def _json(path: Path) -> dict:
         return {}
 
 
+def _write_json(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(value, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
 def progress_info(output_dir: Path, target_layers: list[int]) -> dict:
     status = _json(output_dir / "sequential_run_status.json")
     progress = _json(output_dir / "sequential_progress.json")
     current = _json(output_dir / "sequential_in_progress.json")
     final = _json(output_dir / "sequential_training_report.json")
+    colab = _json(output_dir / "colab_run_status.json")
     accepted = [int(x) for x in progress.get("accepted_layers", status.get("accepted_layers", []))]
     targets = [int(x) for x in progress.get("target_layers", status.get("target_layers", target_layers))]
     reports = []
     for source in (progress, current, final):
         if source.get("layer_reports"):
             reports = source["layer_reports"]
+    scientific_status = status.get("status", final.get("status"))
+    run_status = colab.get("status")
+    if run_status == "trainer_failed":
+        shown_status = "trainer_failed"
+    elif scientific_status:
+        shown_status = scientific_status
+    elif run_status:
+        shown_status = run_status
+    else:
+        shown_status = "not_started"
     return {
         "accepted": accepted,
         "target": targets,
-        "current": current.get("current_layer", status.get("current_layer")),
+        "current": current.get("current_layer", status.get("current_layer", colab.get("current_layer"))),
         "rounds": int(current.get("rounds_completed", status.get("rounds_completed", 0)) or 0),
-        "status": status.get("status", final.get("status", "not_started")),
+        "status": shown_status,
         "reports": reports,
+        "error": colab.get("error"),
+        "return_code": colab.get("return_code"),
     }
 
 
@@ -71,6 +92,11 @@ def dashboard_html(info: dict, live: dict | None = None) -> str:
             pieces.append(f"ΔNLL total <b>{live['cum']:+.5f}</b>")
         if pieces:
             live_text = "<p><b>Live:</b> " + " | ".join(pieces) + "</p>"
+    error = info.get("error") or (live or {}).get("error")
+    error_html = ""
+    if error:
+        safe = str(error).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        error_html = f"<p style='background:#fee2e2;color:#991b1b;padding:8px;border-radius:8px'><b>Last trainer error:</b> {safe}</p>"
     return f"""
     <div style='border:1px solid #cbd5e1;border-radius:12px;padding:14px;margin:6px 0'>
       <h3 style='margin-top:0'>Qwen3.5 Memory Fusion progress</h3>
@@ -81,6 +107,7 @@ def dashboard_html(info: dict, live: dict | None = None) -> str:
       </div>
       <p>Current anchor: <b>{current}</b> | saved rounds: <b>{info.get('rounds', 0)}</b> | status: <b>{info.get('status')}</b></p>
       {live_text}
+      {error_html}
     </div>
     """
 
@@ -113,26 +140,32 @@ def run_live_training(*, cmd: list[str], repo: Path, output_dir: Path, target_la
     from IPython.display import HTML, display
 
     log_path = output_dir / "last_colab_run.log"
+    status_path = output_dir / "colab_run_status.json"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     info = progress_info(output_dir, target_layers)
-    live = {"layer": info.get("current"), "round": None, "step": None, "max_step": max_step, "nmse": None, "cosine": None, "inc": None, "cum": None}
+    live = {"layer": info.get("current"), "round": None, "step": None, "max_step": max_step, "nmse": None, "cosine": None, "inc": None, "cum": None, "error": None}
     handle = display(HTML(dashboard_html(info, live)), display_id=True)
 
     rx_layer = re.compile(r"QWEN3\.5 FULL-ATTENTION REPLACEMENT: layer (\d+)")
     rx_round = re.compile(r"--- layer (\d+) round (\d+) ---")
     rx_step = re.compile(r"layer=(\d+)\s+step=(\d+)/(\d+)")
     rx_check = re.compile(r"ACCEPTANCE CHECK layer=(\d+):\s+NMSE=([0-9.]+).*?cos=([0-9.]+).*?ΔNLL_inc=([+-]?[0-9.]+).*?ΔNLL_total=([+-]?[0-9.]+)")
+    rx_failed = re.compile(r"\[TinyCeNN\]\[PROCESS FAILED\].*?:\s*(.+)$")
 
+    started = datetime.now(timezone.utc).isoformat()
+    _write_json(status_path, {"status": "running", "started_utc": started, "current_layer": live.get("layer"), "command": cmd})
     last_ui = 0.0
     print("▶ TRAIN / RESUME")
     print("Targets:", target_layers)
     print("Command:", " ".join(cmd))
     print("Live log:", log_path)
 
+    last_line = ""
     with log_path.open("w", encoding="utf-8") as log:
         with subprocess.Popen(cmd, cwd=repo, env=env or os.environ.copy(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) as proc:
             assert proc.stdout is not None
             for line in proc.stdout:
+                last_line = line.strip()
                 print(line, end="", flush=True)
                 log.write(line)
                 log.flush()
@@ -148,14 +181,35 @@ def run_live_training(*, cmd: list[str], repo: Path, output_dir: Path, target_la
                 m = rx_check.search(line)
                 if m:
                     live.update(layer=int(m.group(1)), nmse=float(m.group(2)), cosine=float(m.group(3)), inc=float(m.group(4)), cum=float(m.group(5)))
+                m = rx_failed.search(line)
+                if m:
+                    live["error"] = m.group(1)
                 now = time.time()
-                if now - last_ui > 1.0 or "ACCEPTANCE CHECK" in line or "accepted Qwen3.5" in line:
+                if now - last_ui > 1.0 or "ACCEPTANCE CHECK" in line or "accepted Qwen3.5" in line or "PROCESS FAILED" in line:
                     current = progress_info(output_dir, target_layers)
                     if live.get("layer") is not None:
                         current["current"] = live["layer"]
                     handle.update(HTML(dashboard_html(current, live)))
                     last_ui = now
             return_code = proc.wait()
+
+    final_status = "completed" if return_code == 0 else "trainer_failed"
+    error = live.get("error") or (last_line if return_code else None)
+    _write_json(status_path, {
+        "status": final_status,
+        "started_utc": started,
+        "finished_utc": datetime.now(timezone.utc).isoformat(),
+        "return_code": return_code,
+        "current_layer": live.get("layer"),
+        "round": live.get("round"),
+        "step": live.get("step"),
+        "error": error,
+        "command": cmd,
+    })
+    final_info = progress_info(output_dir, target_layers)
+    if live.get("layer") is not None:
+        final_info["current"] = live["layer"]
+    handle.update(HTML(dashboard_html(final_info, live)))
     return return_code
 
 
