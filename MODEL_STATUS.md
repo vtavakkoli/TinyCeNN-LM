@@ -20,7 +20,9 @@ These are worth keeping for research, but they are **not current winners**:
 - `Qwen3_5_0_8B_MemoryFusion_Sequential_Acceptance_Colab.ipynb` — active strict-gated MemoryFusion experiment. The current run has accepted only part of the target full-attention anchors, so do not present it as a finished replacement.
 - `Qwen3_5_0_8B_PDelta3_CLVR_Sequential_Colab.ipynb` — promising Qwen-scale PDelta3 experiment; keep for comparison with Integrated Memory.
 - `Gemma4_E2B_PDelta3_CLVR_Sequential_Colab.ipynb` — next-generation PDelta3 target; still experimental.
-- `Gemma4_E2B_CeNN_Integrated_Memory_Colab.ipynb` — Gemma 4 integrated-memory pilot; still experimental.
+- `Gemma4_E2B_CeNN_Integrated_Memory_V2_Colab.ipynb` — corrected Gemma 4 integrated-memory experiment with the text-checkpoint remapping fix; still experimental until its held-out run is complete.
+
+The older `Gemma4_E2B_CeNN_Integrated_Memory_Colab.ipynb` V1 path is superseded because V2 fixes the Gemma 4 multimodal-to-text checkpoint-loading issue.
 
 ## Legacy / archive tracks
 
