@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
@@ -152,8 +153,11 @@ class MemoryFusionGemma4Attention(nn.Module):
         v = self.v_proj(hidden_states).view(bsz, seq_len, self.num_key_value_heads, self.head_dim)
         v = self.v_norm(v)
 
+        # Gemma 4 uses the single-tensor Gemma3n rotary helper, not the
+        # Llama/Qwen helper that rotates (q, k) together.
         cos, sin = position_embeddings
-        q, k = apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=2)
+        q = apply_rotary_pos_emb(q, cos, sin, unsqueeze_dim=2)
+        k = apply_rotary_pos_emb(k, cos, sin, unsqueeze_dim=2)
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
@@ -194,7 +198,7 @@ class DualGemma4Attention(nn.Module):
             return tuple(DualGemma4Attention._detach_tree(v) for v in value)
         if isinstance(value, list):
             return [DualGemma4Attention._detach_tree(v) for v in value]
-        if isinstance(value, dict):
+        if isinstance(value, Mapping):
             return {k: DualGemma4Attention._detach_tree(v) for k, v in value.items()}
         return value
 
