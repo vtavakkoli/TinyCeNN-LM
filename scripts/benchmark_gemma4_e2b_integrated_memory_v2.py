@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Gemma 4 E2B TinyCeNN V2.
+"""Gemma 4 E2B TinyCeNN V2.1.
 
-Fixes V1 loading of the multimodal google/gemma-4-E2B checkpoint into a
-text-only Gemma4ForCausalLM. The checkpoint stores text weights under
-model.language_model.*, so V2 remaps those keys instead of silently training a
-randomly initialized text model. V2 also requires the untouched native Gemma 4
+Fixes loading of the multimodal google/gemma-4-E2B checkpoint into the
+text-only Gemma4ForCausalLM used by the benchmark. The checkpoint stores text
+weights under model.language_model.*, so those keys are remapped to model.*.
+
+V2.0 attempted to replace the lazy top-level transformers.Gemma4ForCausalLM
+export. A later ``from transformers import Gemma4ForCausalLM`` inside V1 main()
+resolved the original class and bypassed that proxy. V2.1 patches the real
+Gemma4ForCausalLM.from_pretrained class method itself, while retaining the
+original bound loader internally. It also requires the untouched native Gemma 4
 cache path to pass a sanity check before judging TinyCeNN relative to it.
 """
 import json
@@ -16,47 +21,81 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import torch
-import transformers
+from transformers import AutoConfig, Gemma4ForCausalLM
 from transformers.cache_utils import DynamicCache
 
 from scripts import benchmark_gemma4_e2b_integrated_memory as v1
-from tinycenn_lm.gemma4_checkpoint import load_gemma4_text_causal
+from tinycenn_lm.gemma4_checkpoint import TEXT_KEY_MAPPING
 from tinycenn_lm.gemma4_integrated_memory import new_cache, text_config
 
 
-class _MappedGemma4ForCausalLM:
-    """Proxy used only so V1 main() resolves the corrected loader."""
+# Keep the real classmethod before patching it. Calling this bound method later
+# does NOT recurse through the replacement below.
+_ORIGINAL_FROM_PRETRAINED = Gemma4ForCausalLM.from_pretrained
 
-    @classmethod
-    def from_pretrained(cls, model_id, *args, **kwargs):
-        if args:
-            raise TypeError("Gemma 4 V2 loader expects keyword-only from_pretrained options")
-        model, info = load_gemma4_text_causal(
-            model_id,
-            revision=kwargs.pop("revision", "main"),
-            dtype=kwargs.pop("dtype", kwargs.pop("torch_dtype", None)),
-            attn_implementation=kwargs.pop("attn_implementation", "sdpa"),
-            token=kwargs.pop("token", None),
+
+def _validate_loading_info(model, info):
+    cfg = text_config(model)
+    missing = set(info.get("missing_keys", ()))
+    allowed_missing = {"lm_head.weight"} if getattr(cfg, "tie_word_embeddings", False) else set()
+    core_missing = sorted(missing - allowed_missing)
+    unexpected_text = sorted(
+        key for key in info.get("unexpected_keys", ())
+        if key.startswith("model.language_model.")
+    )
+    errors = list(info.get("error_msgs", ()))
+    if core_missing or unexpected_text or errors:
+        raise RuntimeError(
+            "Gemma 4 V2.1 text checkpoint remap failed before training: "
+            f"core_missing={core_missing[:12]}, "
+            f"unexpected_text={unexpected_text[:12]}, errors={errors[:4]}"
         )
-        if kwargs:
-            raise TypeError(f"Unsupported Gemma 4 V2 loader options: {sorted(kwargs)}")
-        print(
-            "gemma4_text_loader_v2:",
-            json.dumps(
-                {
-                    "core_missing_keys": info["core_missing_keys"],
-                    "unexpected_text_keys": info["unexpected_text_keys"],
-                    "unexpected_multimodal_key_count": len(info.get("unexpected_keys", ())),
-                    "key_mapping": info["text_key_mapping"],
-                }
-            ),
-            flush=True,
-        )
-        return model
+    return core_missing, unexpected_text
 
 
-# v1.main() imports this symbol from transformers at runtime.
-transformers.Gemma4ForCausalLM = _MappedGemma4ForCausalLM
+@classmethod
+def _mapped_from_pretrained(cls, model_id, *model_args, **kwargs):
+    """Load the multimodal checkpoint's language_model weights into CausalLM."""
+    revision = kwargs.get("revision", "main")
+    token = kwargs.get("token", None)
+
+    # V1 passes no explicit config. Always resolve the multimodal config first
+    # and use its exact text sub-config for Gemma4ForCausalLM.
+    full_config = AutoConfig.from_pretrained(model_id, revision=revision, token=token)
+    cfg = full_config.get_text_config(decoder=True)
+    if cfg.model_type != "gemma4_text":
+        raise ValueError(f"Expected gemma4_text, got {cfg.model_type}")
+
+    kwargs = dict(kwargs)
+    kwargs["config"] = cfg
+    kwargs["key_mapping"] = TEXT_KEY_MAPPING
+    kwargs["output_loading_info"] = True
+
+    model, info = _ORIGINAL_FROM_PRETRAINED(model_id, *model_args, **kwargs)
+    core_missing, unexpected_text = _validate_loading_info(model, info)
+    model.tie_weights()
+    model.eval().requires_grad_(False)
+
+    print(
+        "gemma4_text_loader_v2_1:",
+        json.dumps(
+            {
+                "core_missing_keys": core_missing,
+                "unexpected_text_keys": unexpected_text,
+                "unexpected_multimodal_key_count": len(info.get("unexpected_keys", ())),
+                "key_mapping": TEXT_KEY_MAPPING,
+                "loader_intercept": "Gemma4ForCausalLM.from_pretrained classmethod",
+            }
+        ),
+        flush=True,
+    )
+    return model
+
+
+# Patch the actual class object, not the lazy top-level transformers export.
+# The import inside v1.main() therefore resolves this same class with the
+# corrected classmethod.
+Gemma4ForCausalLM.from_pretrained = _mapped_from_pretrained
 
 
 @torch.no_grad()
@@ -78,8 +117,9 @@ def gemma4_cache_equivalence_v2(teacher, model, block, device, precision, block_
     teacher_mismatch = int((tf.argmax(-1) != tc.argmax(-1)).sum().item())
     candidate_mismatch = int((cf.argmax(-1) != cc.argmax(-1)).sum().item())
 
-    # If the untouched model cannot reproduce its own full path reasonably well,
-    # the diagnostic itself is invalid and must not be used as a TinyCeNN gate.
+    # A broken native baseline must stop the experiment before TinyCeNN is
+    # interpreted. With correctly loaded Gemma 4 weights this diagnostic should
+    # be close to the model's own cached/full numerical path.
     native_nmse_limit = 0.02
     native_top1_floor = 0.95
     if not math.isfinite(teacher_nmse) or not math.isfinite(teacher_top1):
@@ -89,7 +129,7 @@ def gemma4_cache_equivalence_v2(teacher, model, block, device, precision, block_
             "Native Gemma 4 cache sanity failed before TinyCeNN comparison: "
             f"NMSE={teacher_nmse:.6g} (limit {native_nmse_limit}), "
             f"top1={teacher_top1:.4f} (floor {native_top1_floor}). "
-            "Check checkpoint loading/cache semantics; do not train against this baseline."
+            "Checkpoint loading succeeded, so inspect Gemma 4 cache semantics before continuing."
         )
 
     nmse_limit = max(2e-3, 4.0 * teacher_nmse + 5e-4)
@@ -117,7 +157,7 @@ def gemma4_cache_equivalence_v2(teacher, model, block, device, precision, block_
         and candidate_mismatch <= allowed_mismatch
         and candidate_top1 >= top1_floor
     )
-    print("cache_equivalence_gemma4_v2:", json.dumps(metrics), flush=True)
+    print("cache_equivalence_gemma4_v2_1:", json.dumps(metrics), flush=True)
 
     finite = (
         "cached_logits_nmse",
@@ -126,11 +166,11 @@ def gemma4_cache_equivalence_v2(teacher, model, block, device, precision, block_
         "teacher_cached_top1_agreement",
     )
     if not all(math.isfinite(metrics[k]) for k in finite):
-        raise RuntimeError(f"Non-finite Gemma 4 V2 cache metrics: {metrics}")
+        raise RuntimeError(f"Non-finite Gemma 4 V2.1 cache metrics: {metrics}")
     if candidate_nmse > nmse_limit:
-        raise RuntimeError(f"Gemma 4 V2 cache NMSE too high: {metrics}")
+        raise RuntimeError(f"Gemma 4 V2.1 cache NMSE too high: {metrics}")
     if candidate_mismatch > allowed_mismatch or candidate_top1 < top1_floor:
-        raise RuntimeError(f"Gemma 4 V2 cache top-1 drift too high: {metrics}")
+        raise RuntimeError(f"Gemma 4 V2.1 cache top-1 drift too high: {metrics}")
     return metrics
 
 
