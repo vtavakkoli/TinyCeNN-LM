@@ -1,161 +1,59 @@
 # TinyCeNN-LM
 
-**Can shared recurrent CeNN computation add useful depth to a pretrained tiny Transformer without adding Transformer layers?**
+**Researching CeNN/recurrent-memory alternatives to selected Transformer attention layers without throwing away pretrained language-model capability.**
 
-TinyCeNN-LM is a small, reproducible research lab built on [`arnir0/Tiny-LLM`](https://huggingface.co/arnir0/Tiny-LLM). The upstream checkpoint is a ~13M-parameter, one-layer Llama-family causal language model pretrained on 32B FineWeb tokens. TinyCeNN-LM keeps that pretrained layer intact and adds a **causal Cellular Neural Network (CeNN) residual state core** whose weights are shared across recurrent iterations.
+TinyCeNN-LM has grown from the original Tiny-LLM CeNN adapter into a model-replacement research lab spanning **SmolLM2, Qwen3.5, FunctionGemma and Gemma 4**. The repository intentionally keeps negative results and ablations, but they are no longer all equal entry points.
 
-For the **Transformer-free distilled student**, see [DISTILLATION.md](DISTILLATION.md).
-If training slows after the first 10M tokens, use the
-[optimized continuation recipe](CONTINUATION.md) and
-[Colab notebook](notebooks/TinyCeNN_Optimized_Continue_Colab.ipynb).
-They add FP32 student parameter storage, optional interface adaptation, and
-continuation from a saved data-stream position, with the same held-out benchmark.
+> **Start here:** [`MODEL_STATUS.md`](MODEL_STATUS.md) is the canonical model-zoo guide. [`notebooks/README.md`](notebooks/README.md) lists the notebooks that should be used first.
 
-## Why this first design?
+## Current research tracks
 
-Replacing Tiny-LLM's only pretrained Transformer layer with random weights would throw away the checkpoint's learned computation. Version 0.1 therefore uses a safer experiment:
+| Track | Role | Start here |
+|---|---|---|
+| **Qwen3.5 Integrated Memory V2.2** | Strongest validated quality/efficiency track; conservative replacement rather than replacing every attention layer | [`Qwen3_5_0_8B_CeNN_Integrated_Memory_V2_2_Colab.ipynb`](notebooks/Qwen3_5_0_8B_CeNN_Integrated_Memory_V2_2_Colab.ipynb) |
+| **SmolLM2 PDelta3-GDN2-CLVR + Local32** | Strongest current attention-replacement research direction | [`SmolLM2_PDelta3_CLVR_Sequential_Optimization_Colab.ipynb`](notebooks/SmolLM2_PDelta3_CLVR_Sequential_Optimization_Colab.ipynb) |
+| **SmolLM2 Integrated Memory V3** | Stable compact quality-preservation/cache-efficiency reference | [`SmolLM2_Integrated_Memory_V3_Colab.ipynb`](notebooks/SmolLM2_Integrated_Memory_V3_Colab.ipynb) |
+| **FunctionGemma Integrated Memory V2** | Specialized tool-calling experiment | [`FunctionGemma_270M_CeNN_Integrated_Memory_V2_Colab.ipynb`](notebooks/FunctionGemma_270M_CeNN_Integrated_Memory_V2_Colab.ipynb) |
+| **Gemma 4 E2B Integrated Memory V2** | New experimental target with corrected text-checkpoint loading; not yet promoted to a validated winner | [`Gemma4_E2B_CeNN_Integrated_Memory_V2_Colab.ipynb`](notebooks/Gemma4_E2B_CeNN_Integrated_Memory_V2_Colab.ipynb) |
 
-```text
-Tokens
-  │
-  ▼
-Pretrained embedding
-  │
-  ▼
-Pretrained Llama decoder layer ──────────────┐
-  │                                         │
-  ▼                                         │
-Causal CeNN state core                      │
-(shared weights; x1/x2/x4/x8 iterations)    │
-  │                                         │
-  └──────────────── residual ───────────────┘
-  │
-  ▼
-Pretrained norm + LM head
-  │
-  ▼
-Next-token logits
-```
+## Active experiments, not headline models
 
-The CeNN branch is **exactly zero at initialization**, so injecting it initially reproduces the pretrained model's decoder output. Fine-tuning can then learn the additional recurrent computation instead of first recovering from a destructive layer replacement.
+The Qwen3.5 MemoryFusion and PDelta3 notebooks, and the Gemma 4 Integrated Memory V2/PDelta3 notebooks, are active research. They stay in the repository because their results are useful, but an incomplete strict-gate run must not be presented as proof that the adapted model is better than the base model.
 
-## CeNN core
+Full 30-layer SmolLM2 MemoryFusion, AMCeNN, PDelta2, the original Tiny-LLM adapter, story/anti-repeat and other early notebooks are **legacy/ablation tracks**. They remain available for reproducibility and negative-result analysis; see [`MODEL_STATUS.md`](MODEL_STATUS.md) before publishing or citing one as a recommended checkpoint.
 
-The adapter treats sequence positions as 1-D cells. Each recurrent update uses:
+## Research rule: selective replacement first
 
-- strictly **causal depthwise neighborhood mixing**;
-- a dilation schedule (default `1,2,4,8`) to expand the receptive field quickly;
-- gated **SwiGLU** state updates;
-- fp32-accumulated RMS normalization for stability;
-- one **shared cell** reused for every recurrent step;
-- zero-initialized output projection for safe pretrained-model insertion.
+The strongest recent results support a more conservative principle than the original “replace everything” experiments:
 
-With kernel size 3 and four recurrent steps using dilations `1,2,4,8`, the CeNN branch has a 31-token causal receptive field while keeping the same trainable parameter count as a one-step CeNN.
+1. identify attention layers that are good replacement candidates;
+2. train one replacement at a time;
+3. gate acceptance using representation similarity and model-level loss criteria;
+4. keep the pretrained/native mechanism when a candidate fails the gate;
+5. evaluate the accepted model on data or tasks that were not used to train the replacement;
+6. measure quality **and** the efficiency benefit (cache, memory, latency and trainable parameters).
 
-## Docker: recommended training path
+This makes failed replacements informative rather than allowing one bad layer to contaminate an entire model.
 
-The repository includes a CUDA Docker image and Docker Compose services for training, benchmarking and generation. The `train` service automatically:
+## Main architecture families
 
-1. verifies that CUDA is visible inside the container;
-2. downloads/caches `arnir0/Tiny-LLM` from Hugging Face;
-3. streams `HuggingFaceFW/fineweb` (`sample-10BT`);
-4. creates a fixed monitoring sample before training;
-5. records the initial loss/perplexity;
-6. fine-tunes the CeNN adapter;
-7. periodically evaluates loss/perplexity and gradient health;
-8. saves the best adapter automatically;
-9. stops with an error if loss becomes non-finite or strongly diverges;
-10. writes `training_report.json` with the complete health history.
+### Integrated Memory
 
-The default Docker profile is conservative for an **8 GB GPU**: context 256, batch 4, gradient accumulation 8, CeNN x4 and 1M training tokens.
+Conservative selective replacement designed to preserve pretrained behavior while reducing the cost of a subset of attention layers. This is currently the strongest complete quality-preservation path in the repository.
 
-### Build and train
+### PDelta3-GDN2-CLVR
 
-Docker Compose v2 with NVIDIA GPU support is recommended (Docker Desktop + WSL2 GPU support on Windows works well).
+A recurrent/delta-memory replacement direction combining local CeNN computation with editable global memory and sequential acceptance. This is the main architecture-research track when the goal is to replace attention rather than simply augment it.
 
-```bash
-git clone https://github.com/vtavakkoli/TinyCeNN-LM.git
-cd TinyCeNN-LM
+### MemoryFusion
 
-docker compose build train
-docker compose run --rm train
-```
+Combines local cellular/multiscale processing with global recurrent memory. It remains scientifically useful, especially in strict sequential experiments, but the old full-replacement r48/r64 checkpoints are not the recommended model path.
 
-The first run downloads the base model and streams the dataset. Hugging Face files are kept in the persistent `hf-cache` volume for later runs.
+### AMCeNN / Top-2 and original TinyCeNN
 
-Outputs are mounted back to the host:
+Earlier architecture generations. Keep them for comparisons and reproducibility, not as the default starting point for new experiments.
 
-```text
-checkpoints/
-├── tinycenn-base/
-│   ├── cenn_adapter.pt
-│   ├── cenn_config.json
-│   ├── tokenizer files...
-│   └── training_report.json
-└── tinycenn-base-best/
-    ├── cenn_adapter.pt
-    └── cenn_config.json
-```
-
-At the end of the run you will see one of:
-
-- `HEALTHY` - the best monitoring loss improved by at least the configured threshold;
-- `WARNING_NO_IMPROVEMENT` - training stayed numerically stable but did not improve enough yet;
-- `DIVERGED` - non-finite gradients/loss or excessive validation-loss growth; the container exits non-zero.
-
-`training_report.json` includes initial/final/best loss, perplexity, best update, relative improvement, tokens processed, elapsed time, peak VRAM and the full evaluation history. FineWeb `sample-10BT` has no official validation split, so this fixed separately shuffled sample is a **training-health monitor**, not a publication-grade held-out benchmark.
-
-### Configure a longer run
-
-Copy the provided environment template:
-
-```bash
-cp .env.example .env
-```
-
-For a 10M-token run, change:
-
-```dotenv
-MAX_TOKENS=10000000
-```
-
-For 50M:
-
-```dotenv
-MAX_TOKENS=50000000
-```
-
-Then run the same command:
-
-```bash
-docker compose run --rm train
-```
-
-Useful 8 GB tuning variables are available in `.env`: `CONTEXT_LENGTH`, `BATCH_SIZE`, `GRAD_ACCUM`, `CENN_STEPS`, `LEARNING_RATE`, `EVAL_EVERY`, `EVAL_BATCHES`, `HEALTH_MIN_IMPROVEMENT`, and `NO_COMPILE`.
-
-Set `FAIL_ON_NO_IMPROVEMENT=1` if you want CI/automation to return a non-zero exit code when the model stays stable but fails to improve by the requested threshold.
-
-### Benchmark the best model
-
-```bash
-docker compose run --rm benchmark
-```
-
-By default this loads `checkpoints/tinycenn-base-best`. Override it with, for example:
-
-```bash
-ADAPTER=/workspace/checkpoints/tinycenn-base docker compose run --rm benchmark
-```
-
-### Generate text
-
-```bash
-PROMPT="The future of efficient AI is" docker compose run --rm generate
-```
-
-Generation intentionally uses the complete prefix (`use_cache=False`) in v0.1, because a normal Transformer KV cache does not contain the CeNN recurrent neighborhood state.
-
-## Native Python quick start
+## Installation
 
 ```bash
 git clone https://github.com/vtavakkoli/TinyCeNN-LM.git
@@ -167,85 +65,42 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-### Fast smoke training
+Run the test suite before starting a new architecture experiment:
 
 ```bash
-python scripts/train_adapter.py \
-  --max-tokens 1000000 \
-  --context-length 256 \
-  --batch-size 4 \
-  --grad-accum 8 \
-  --steps 4 \
-  --output-dir checkpoints/tinycenn-base
+python -m pytest -q
 ```
 
-Only the CeNN residual is trainable by default. The pretrained embedding, Transformer layer and LM head remain frozen.
+The repository contains targeted regression tests for the SmolLM2, Qwen3.5 and Gemma 4 adapters in addition to the original TinyCeNN components.
 
-For a longer run:
+## Repository layout
 
-```bash
-python scripts/train_adapter.py \
-  --max-tokens 50000000 \
-  --context-length 256 \
-  --steps 4 \
-  --output-dir checkpoints/tinycenn-base-50m
+```text
+src/tinycenn_lm/   architecture implementations
+scripts/           training, acceptance, benchmark and evaluation runners
+notebooks/         Colab experiments; see notebooks/README.md first
+tests/             regression and architecture tests
+MODEL_STATUS.md    canonical keep/archive/publication status
 ```
 
-### Compare speed with Tiny-LLM
+Older design documents such as [`DISTILLATION.md`](DISTILLATION.md), [`PDELTA2_FLASH.md`](PDELTA2_FLASH.md), [`SHARDED_MOE.md`](SHARDED_MOE.md), [`OPTIMIZED_MEMORY.md`](OPTIMIZED_MEMORY.md) and [`RESEARCH_LAYERS.md`](RESEARCH_LAYERS.md) are retained as research history.
 
-```bash
-python scripts/benchmark.py --steps 4 --context-length 256 --batch-size 4
-```
+## Hugging Face
 
-To benchmark trained adapter weights:
+Experimental checkpoints are published under [`vtava`](https://huggingface.co/vtava). A public checkpoint should have a model card that states:
 
-```bash
-python scripts/benchmark.py --adapter checkpoints/tinycenn-base-best --steps 4
-```
+- the exact base model and architecture variant;
+- which layers were replaced;
+- whether the run passed strict acceptance gates;
+- whether reported metrics are training diagnostics or genuinely held-out evaluation;
+- known generation or task regressions;
+- the matching GitHub notebook/script and commit when possible.
 
-### Generate text
+Do not call a checkpoint “best” merely because it is the newest upload. Promote it only after its evaluation is stronger or its efficiency/quality trade-off is clearly better than the current reference.
 
-```bash
-python scripts/generate.py \
-  --adapter checkpoints/tinycenn-base-best \
-  --prompt "The future of efficient AI is"
-```
+## Original TinyCeNN-LM work
 
-## First ablation matrix
-
-Keep everything else identical and vary only recurrent computation:
-
-| Model | Shared CeNN steps | Unique CeNN parameters | Goal |
-|---|---:|---:|---|
-| Tiny-LLM | 0 | 0 | pretrained baseline |
-| TinyCeNN-LM x1 | 1 | fixed | local recurrent adapter |
-| TinyCeNN-LM x2 | 2 | fixed | more compute, same parameters |
-| TinyCeNN-LM x4 | 4 | fixed | default |
-| TinyCeNN-LM x8 | 8 | fixed | test compute-depth scaling |
-
-Measure monitoring/held-out loss and perplexity, tokens/s, peak VRAM, trainable parameters and wall-clock convergence. A useful result is not merely lower loss; it is whether **additional shared-weight CeNN iterations improve quality enough to justify their compute cost**.
-
-## Design goals
-
-1. **Preserve the pretrained model.** CeNN starts as an exact no-op.
-2. **No information leakage.** All neighborhood convolutions are left-padded and causal.
-3. **Parameter-efficient depth.** Recurrent steps share the same weights.
-4. **Fast CUDA training path.** The core uses depthwise `conv1d`, linear projections, optional `torch.compile`, and PyTorch SDPA in the base model.
-5. **Correct autoregressive semantics.** v0.1 intentionally uses `use_cache=False` during generation. A normal Transformer KV cache does not preserve the recurrent CeNN neighborhood states, so disabling it avoids a silent train/inference mismatch.
-6. **Robust experiments.** Gradient clipping, mixed precision, finite-loss/gradient checks, streaming data, deterministic seeding, periodic evaluation, best-checkpoint saving and JSON health reports are built in.
-7. **Easy rollback.** The base Hugging Face checkpoint is never overwritten; TinyCeNN weights are saved separately.
-8. **Reproducible container path.** The default CUDA/PyTorch image is pinned and can be overridden with `PYTORCH_IMAGE`.
-
-## Roadmap
-
-- **v0.1:** residual CeNN adaptation of the pretrained Tiny-LLM layer.
-- **v0.2:** teacher-distilled CeNN-only decoder replacement plus a dedicated streaming CeNN state cache for fast token-by-token generation.
-- **v0.3:** continued base-model pretraining and controlled Transformer/CeNN scaling studies.
-- **v0.4:** instruction/SFT stage (`TinyCeNN-Chat`) after a successful base model.
-
-## Upstream model
-
-TinyCeNN-LM is an independent research project based on the MIT-licensed `arnir0/Tiny-LLM` checkpoint. See the upstream model card for its original training details and usage conditions.
+The first TinyCeNN-LM experiments used `arnir0/Tiny-LLM` and a causal CeNN residual state core, followed by Transformer-free distillation, sharded MoE, story/anti-repeat and PDelta experiments. Those implementations and documents remain in the repository for reproducibility, but they are now the **legacy track**, not the primary project description.
 
 ## License
 
