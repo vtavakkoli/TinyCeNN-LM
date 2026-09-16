@@ -14,11 +14,11 @@ TinyCeNN-LM has grown from the original Tiny-LLM CeNN adapter into a model-repla
 | **SmolLM2 PDelta3-GDN2-CLVR + Local32** | Strongest current attention-replacement research direction | [`SmolLM2_PDelta3_CLVR_Sequential_Optimization_Colab.ipynb`](notebooks/SmolLM2_PDelta3_CLVR_Sequential_Optimization_Colab.ipynb) |
 | **SmolLM2 Integrated Memory V3** | Stable compact quality-preservation/cache-efficiency reference | [`SmolLM2_Integrated_Memory_V3_Colab.ipynb`](notebooks/SmolLM2_Integrated_Memory_V3_Colab.ipynb) |
 | **FunctionGemma Integrated Memory V2** | Specialized tool-calling experiment | [`FunctionGemma_270M_CeNN_Integrated_Memory_V2_Colab.ipynb`](notebooks/FunctionGemma_270M_CeNN_Integrated_Memory_V2_Colab.ipynb) |
-| **Gemma 4 E2B** | New experimental target; not yet promoted to a validated winner | [`Gemma4_E2B_PDelta3_CLVR_Sequential_Colab.ipynb`](notebooks/Gemma4_E2B_PDelta3_CLVR_Sequential_Colab.ipynb) |
+| **Gemma 4 E2B Integrated Memory V2** | New experimental target with corrected text-checkpoint loading; not yet promoted to a validated winner | [`Gemma4_E2B_CeNN_Integrated_Memory_V2_Colab.ipynb`](notebooks/Gemma4_E2B_CeNN_Integrated_Memory_V2_Colab.ipynb) |
 
 ## Active experiments, not headline models
 
-The Qwen3.5 MemoryFusion and PDelta3 notebooks, and the Gemma 4 integrated-memory/PDelta3 notebooks, are active research. They stay in the repository because their results are useful, but an incomplete strict-gate run must not be presented as proof that the adapted model is better than the base model.
+The Qwen3.5 MemoryFusion and PDelta3 notebooks, and the Gemma 4 Integrated Memory V2/PDelta3 notebooks, are active research. They stay in the repository because their results are useful, but an incomplete strict-gate run must not be presented as proof that the adapted model is better than the base model.
 
 Full 30-layer SmolLM2 MemoryFusion, AMCeNN, PDelta2, the original Tiny-LLM adapter, story/anti-repeat and other early notebooks are **legacy/ablation tracks**. They remain available for reproducibility and negative-result analysis; see [`MODEL_STATUS.md`](MODEL_STATUS.md) before publishing or citing one as a recommended checkpoint.
 
