@@ -4,15 +4,20 @@ from __future__ import annotations
 """Qwen3.5 Memory Fusion sequential trainer with positional-attention capture.
 
 Transformers 5.17 calls Qwen3.5 full attention with required positional
-``position_embeddings`` and ``attention_mask`` arguments.  The original shared
+``position_embeddings`` and ``attention_mask`` arguments. The original shared
 SmolLM2 capture helper only copied keyword arguments, so replaying the teacher
-attention failed with ``attention_mask`` missing.  This wrapper binds the actual
+attention failed with ``attention_mask`` missing. This wrapper binds the actual
 forward call signature, preserving positional arguments, then delegates to the
 existing Qwen3.5 sequential trainer.
 """
 
 import inspect
+import sys
+from pathlib import Path
 from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import torch
 
