@@ -16,7 +16,9 @@ The `notebooks/` directory contains the full research history. To avoid picking 
 - `Qwen3_5_0_8B_MemoryFusion_Sequential_Acceptance_Colab.ipynb`
 - `Qwen3_5_0_8B_PDelta3_CLVR_Sequential_Colab.ipynb`
 - `Gemma4_E2B_PDelta3_CLVR_Sequential_Colab.ipynb`
-- `Gemma4_E2B_CeNN_Integrated_Memory_Colab.ipynb`
+- `Gemma4_E2B_CeNN_Integrated_Memory_V2_Colab.ipynb`
+
+For Gemma 4 integrated memory, use **V2**. It contains the corrected multimodal-to-text checkpoint remapping and supersedes `Gemma4_E2B_CeNN_Integrated_Memory_Colab.ipynb`.
 
 These are current research experiments, not evidence that the adapted model is better than the base model.
 
