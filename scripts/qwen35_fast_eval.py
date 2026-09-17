@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fast sampled evaluation for TinyCeNN Qwen3.5 standalone releases.
 
-This is deliberately *not* an official benchmark reproduction.  It samples a
+This is deliberately *not* an official benchmark reproduction. It samples a
 small deterministic subset from public benchmarks and uses zero-shot next-token
 letter scoring so that a 0.8B model can be checked quickly on a single GPU.
 
@@ -12,8 +12,8 @@ Default suite (50 examples each = 200 MCQs):
 - GPQA Diamond
 
 It also runs a short greedy generation probe and reports latency, tokens/sec and
-peak CUDA memory.  Results are written to JSON for easy comparison across model
-variants.
+peak CUDA memory. Results are written to JSON and, by default, a concise FastEval
+section is inserted into the standalone model's README.md/model card.
 """
 from __future__ import annotations
 
@@ -26,14 +26,16 @@ import random
 import string
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
 
 import torch
 from datasets import load_dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer, Qwen3_5ForCausalLM
+from transformers import AutoTokenizer, Qwen3_5ForCausalLM
 
 BASE_MODEL = "Qwen/Qwen3.5-0.8B"
+CARD_START = "<!-- TINYCENN_FASTEVAL_START -->"
+CARD_END = "<!-- TINYCENN_FASTEVAL_END -->"
 
 
 def parse_args():
@@ -45,6 +47,12 @@ def parse_args():
     p.add_argument("--compare-base", action="store_true")
     p.add_argument("--generation-prompts", type=int, default=3)
     p.add_argument("--generation-tokens", type=int, default=24)
+    p.add_argument(
+        "--update-model-card",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="insert/replace the TinyCeNN FastEval section in README.md",
+    )
     return p.parse_args()
 
 
@@ -85,7 +93,11 @@ def load_base(device: torch.device, dtype: torch.dtype):
         token=os.environ.get("HF_TOKEN") or None,
     ).to(device).eval()
     model.config.use_cache = False
-    tok = AutoTokenizer.from_pretrained(BASE_MODEL, use_fast=True, token=os.environ.get("HF_TOKEN") or None)
+    tok = AutoTokenizer.from_pretrained(
+        BASE_MODEL,
+        use_fast=True,
+        token=os.environ.get("HF_TOKEN") or None,
+    )
     return model, tok
 
 
@@ -122,7 +134,12 @@ def build_examples(samples: int, seed: int):
         {
             "question": r["question"],
             "options": list(r["options"]),
-            "answer_index": int(r.get("answer_index", string.ascii_uppercase.index(str(r["answer"]).strip().upper()))),
+            "answer_index": int(
+                r.get(
+                    "answer_index",
+                    string.ascii_uppercase.index(str(r["answer"]).strip().upper()),
+                )
+            ),
         }
         for r in rows
     ]
@@ -150,14 +167,16 @@ def build_examples(samples: int, seed: int):
     for r in rows:
         answer = str(r["Answer"]).strip().upper()
         idx = string.ascii_uppercase.index(answer)
-        mmmlu.append({
-            "question": r["Question"],
-            "options": [r["A"], r["B"], r["C"], r["D"]],
-            "answer_index": idx,
-        })
+        mmmlu.append(
+            {
+                "question": r["Question"],
+                "options": [r["A"], r["B"], r["C"], r["D"]],
+                "answer_index": idx,
+            }
+        )
     suites["MMMLU-DE"] = mmmlu
 
-    # Public GPQA Diamond mirror.  Shuffle the four options per item so the
+    # Public GPQA Diamond mirror. Shuffle the four options per item so the
     # original column order does not leak the correct answer position.
     ds = load_dataset("Wanfq/gpqa", "gpqa_diamond", split="train", streaming=True)
     rows = take_rows(ds, samples, seed + 3)
@@ -173,18 +192,24 @@ def build_examples(samples: int, seed: int):
         tagged = [(correct, True)] + [(x, False) for x in wrong]
         rr = random.Random(seed * 100000 + i)
         rr.shuffle(tagged)
-        gpqa.append({
-            "question": question,
-            "options": [x[0] for x in tagged],
-            "answer_index": next(j for j, x in enumerate(tagged) if x[1]),
-        })
+        gpqa.append(
+            {
+                "question": question,
+                "options": [x[0] for x in tagged],
+                "answer_index": next(j for j, x in enumerate(tagged) if x[1]),
+            }
+        )
     suites["GPQA-Diamond"] = gpqa
     return suites
 
 
 def prompt_for(example: dict):
     letters = string.ascii_uppercase
-    lines = ["Choose the best answer. Reply with only the option letter.", "", f"Question: {example['question']}"]
+    lines = [
+        "Choose the best answer. Reply with only the option letter.",
+        "",
+        f"Question: {example['question']}",
+    ]
     for i, option in enumerate(example["options"]):
         lines.append(f"{letters[i]}. {option}")
     lines.append("Answer:")
@@ -232,19 +257,24 @@ def evaluate_mcq(model, tokenizer, suites: dict[str, list[dict]]):
                 print(f"  {name}: {idx}/{len(examples)}", flush=True)
         elapsed = time.perf_counter() - t0
         acc = 100.0 * correct / max(1, len(examples))
-        benchmark_rows.append({
-            "benchmark": name,
-            "samples": len(examples),
-            "correct": correct,
-            "accuracy_pct": round(acc, 2),
-            "seconds": round(elapsed, 2),
-            "items_per_second": round(len(examples) / max(elapsed, 1e-9), 3),
-            "input_tokens": tokens,
-        })
+        benchmark_rows.append(
+            {
+                "benchmark": name,
+                "samples": len(examples),
+                "correct": correct,
+                "accuracy_pct": round(acc, 2),
+                "seconds": round(elapsed, 2),
+                "items_per_second": round(len(examples) / max(elapsed, 1e-9), 3),
+                "input_tokens": tokens,
+            }
+        )
         total_correct += correct
         total_items += len(examples)
         total_input_tokens += tokens
-        print(f"{name}: {correct}/{len(examples)} = {acc:.1f}% ({elapsed/60:.1f} min)", flush=True)
+        print(
+            f"{name}: {correct}/{len(examples)} = {acc:.1f}% ({elapsed/60:.1f} min)",
+            flush=True,
+        )
 
     elapsed_all = time.perf_counter() - start_all
     return benchmark_rows, {
@@ -263,7 +293,7 @@ def generation_probe(model, tokenizer, prompt_count=3, max_new_tokens=24):
         "A robot has three batteries and uses one battery every two hours. Explain how long it can operate.",
         "In German, briefly explain what an API gateway does.",
         "Summarize the main advantage of local recurrent processing in a neural network.",
-    ][:max(1, prompt_count)]
+    ][: max(1, prompt_count)]
     device = next(model.parameters()).device
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -279,7 +309,10 @@ def generation_probe(model, tokenizer, prompt_count=3, max_new_tokens=24):
             out = model(input_ids=ids, use_cache=False, return_dict=True)
             nxt = out.logits[:, -1].argmax(dim=-1, keepdim=True)
             ids = torch.cat((ids, nxt), dim=1)
-            if tokenizer.eos_token_id is not None and int(nxt.item()) == int(tokenizer.eos_token_id):
+            if (
+                tokenizer.eos_token_id is not None
+                and int(nxt.item()) == int(tokenizer.eos_token_id)
+            ):
                 break
         new_tokens = ids.shape[1] - start_len
         total_new += new_tokens
@@ -287,7 +320,9 @@ def generation_probe(model, tokenizer, prompt_count=3, max_new_tokens=24):
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     elapsed = time.perf_counter() - t0
-    peak = torch.cuda.max_memory_allocated(device) / 1024**3 if device.type == "cuda" else 0.0
+    peak = (
+        torch.cuda.max_memory_allocated(device) / 1024**3 if device.type == "cuda" else 0.0
+    )
     return {
         "prompts": len(prompts),
         "generated_tokens": int(total_new),
@@ -320,6 +355,138 @@ def run_one(name: str, model, tokenizer, suites, args):
         "generation": generation,
         "peak_vram_gib_observed": round(peak, 3),
     }
+
+
+def _fmt_pct(value):
+    return "—" if value is None else f"{float(value):.2f}%"
+
+
+def _fmt_delta(value):
+    if value is None:
+        return "—"
+    return f"{float(value):+.2f} pp"
+
+
+def build_model_card_section(report: dict):
+    results = report.get("results", [])
+    if not results:
+        raise ValueError("FastEval report has no model results")
+
+    custom = results[0]
+    base = results[1] if len(results) > 1 else None
+    base_rows = {
+        row["benchmark"]: row for row in (base.get("benchmarks", []) if base else [])
+    }
+
+    lines = [
+        CARD_START,
+        "## TinyCeNN FastEval",
+        "",
+        "> **Sampled evaluation, not an official full benchmark reproduction.** "
+        "Scores use deterministic zero-shot next-token option-letter scoring on small public subsets.",
+        "",
+        f"- Suite: `{report.get('suite', 'TinyCeNN FastEval')}`",
+        f"- Samples per benchmark: **{report.get('samples_per_benchmark', '—')}**",
+        f"- Seed: `{report.get('seed', '—')}`",
+        f"- Method: {report.get('method', '—')}",
+        f"- Device: `{report.get('device', '—')}`",
+        f"- Generated: `{report.get('generated_at_utc', '—')}`",
+        "",
+    ]
+
+    if base:
+        lines += [
+            "| Benchmark | n | TinyCeNN | Qwen3.5-0.8B base | Δ |",
+            "|---|---:|---:|---:|---:|",
+        ]
+    else:
+        lines += [
+            "| Benchmark | n | Accuracy |",
+            "|---|---:|---:|",
+        ]
+
+    for row in custom.get("benchmarks", []):
+        name = row["benchmark"]
+        acc = row.get("accuracy_pct")
+        n = row.get("samples")
+        if base:
+            b = base_rows.get(name, {})
+            bacc = b.get("accuracy_pct")
+            delta = None if bacc is None or acc is None else float(acc) - float(bacc)
+            lines.append(
+                f"| {name} | {n} | **{_fmt_pct(acc)}** | {_fmt_pct(bacc)} | {_fmt_delta(delta)} |"
+            )
+        else:
+            lines.append(f"| {name} | {n} | **{_fmt_pct(acc)}** |")
+
+    custom_overall = custom.get("overall", {})
+    if base:
+        base_overall = base.get("overall", {})
+        cacc = custom_overall.get("accuracy_pct")
+        bacc = base_overall.get("accuracy_pct")
+        delta = None if cacc is None or bacc is None else float(cacc) - float(bacc)
+        lines.append(
+            f"| **Overall sampled** | **{custom_overall.get('samples', '—')}** | "
+            f"**{_fmt_pct(cacc)}** | **{_fmt_pct(bacc)}** | **{_fmt_delta(delta)}** |"
+        )
+    else:
+        lines.append(
+            f"| **Overall sampled** | **{custom_overall.get('samples', '—')}** | "
+            f"**{_fmt_pct(custom_overall.get('accuracy_pct'))}** |"
+        )
+
+    lines += ["", "### Fast inference probe", ""]
+    if base:
+        lines += [
+            "| Model | Generated tokens | Tokens/s | Peak VRAM (GiB) |",
+            "|---|---:|---:|---:|",
+        ]
+        for result in (custom, base):
+            g = result.get("generation", {})
+            lines.append(
+                f"| {result.get('name', 'model')} | {g.get('generated_tokens', '—')} | "
+                f"{g.get('tokens_per_second', '—')} | {g.get('peak_vram_gib', '—')} |"
+            )
+    else:
+        g = custom.get("generation", {})
+        lines += [
+            "| Generated tokens | Tokens/s | Peak VRAM (GiB) |",
+            "|---:|---:|---:|",
+            f"| {g.get('generated_tokens', '—')} | {g.get('tokens_per_second', '—')} | {g.get('peak_vram_gib', '—')} |",
+        ]
+
+    lines += [
+        "",
+        "The generation probe uses greedy decoding with `use_cache=False`, matching the current TinyCeNN runtime. "
+        "These sampled scores are intended for rapid regression/comparison testing and should not be reported as "
+        "the official full-dataset benchmark results.",
+        "",
+        "Detailed machine-readable results: [`fast_eval.json`](./fast_eval.json).",
+        CARD_END,
+    ]
+    return "\n".join(lines)
+
+
+def update_model_card(model_dir: Path, report: dict):
+    readme = model_dir / "README.md"
+    if readme.exists():
+        text = readme.read_text(encoding="utf-8")
+    else:
+        text = f"# {model_dir.name}\n"
+
+    section = build_model_card_section(report)
+    if CARD_START in text and CARD_END in text:
+        before = text.split(CARD_START, 1)[0].rstrip()
+        after = text.split(CARD_END, 1)[1].lstrip()
+        text = before + "\n\n" + section
+        if after:
+            text += "\n\n" + after
+        text += "\n"
+    else:
+        text = text.rstrip() + "\n\n" + section + "\n"
+
+    readme.write_text(text, encoding="utf-8")
+    return readme
 
 
 def main():
@@ -358,6 +525,7 @@ def main():
         "method": "deterministic sampled zero-shot next-token letter scoring",
         "samples_per_benchmark": args.samples,
         "seed": args.seed,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "datasets": {
             "MMLU-Pro": "TIGER-Lab/MMLU-Pro:test",
             "PIQA": "lighteval/piqa:validation",
@@ -369,13 +537,27 @@ def main():
         "results": results,
     }
     output.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    if args.update_model_card:
+        card = update_model_card(model_dir, report)
+        print("Updated model card:", card)
+
     print("\nFAST EVAL SUMMARY")
     for result in results:
         print(result["name"])
         for row in result["benchmarks"]:
-            print(f"  {row['benchmark']:14s} {row['accuracy_pct']:6.2f}%  n={row['samples']:3d}  {row['seconds']/60:5.1f} min")
-        print(f"  OVERALL        {result['overall']['accuracy_pct']:6.2f}%  n={result['overall']['samples']}")
-        print(f"  GENERATION     {result['generation']['tokens_per_second']:.2f} tok/s  peak={result['generation']['peak_vram_gib']:.2f} GiB")
+            print(
+                f"  {row['benchmark']:14s} {row['accuracy_pct']:6.2f}%  "
+                f"n={row['samples']:3d}  {row['seconds']/60:5.1f} min"
+            )
+        print(
+            f"  OVERALL        {result['overall']['accuracy_pct']:6.2f}%  "
+            f"n={result['overall']['samples']}"
+        )
+        print(
+            f"  GENERATION     {result['generation']['tokens_per_second']:.2f} tok/s  "
+            f"peak={result['generation']['peak_vram_gib']:.2f} GiB"
+        )
     print("Saved:", output)
     return 0
 
