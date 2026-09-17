@@ -50,7 +50,13 @@ def _logit(p: float) -> float:
 
 
 class FlyWireGateController(nn.Module):
-    """Dense FlyWire controller producing decay/erase/write gates."""
+    """Dense 256-node controller constrained by a fixed FlyWire adjacency.
+
+    The connectome is used as a routing prior. Current hidden content is projected
+    into Fly nodes; biological propagation then produces decay/erase/write gates
+    for the delta memory. 256x256 dense matmul is intentionally used here because
+    it is usually faster on GPU than many tiny irregular index_add operations.
+    """
 
     def __init__(
         self,
@@ -335,9 +341,8 @@ def replace_all_attention_with_flydelta(
         new = FlyDeltaHybridAttention(old, model.config, config, idx, adjacency)
         new.to(device=old.q_proj.weight.device, dtype=old.q_proj.weight.dtype)
         if new.controller is not None:
-            new.controller.in_proj.weight.data = new.controller.in_proj.weight.data.to(old.q_proj.weight.dtype)
-            new.controller.out_proj.weight.data = new.controller.out_proj.weight.data.to(old.q_proj.weight.dtype)
-            new.controller.out_proj.bias.data = new.controller.out_proj.bias.data.to(old.q_proj.weight.dtype)
+            new.controller.in_proj.float()
+            new.controller.out_proj.float()
             new.controller.adjacency.data = new.controller.adjacency.data.float()
             new.controller.graph_gain.data = new.controller.graph_gain.data.float()
             new.delta_gate_logit.data = new.delta_gate_logit.data.float()
