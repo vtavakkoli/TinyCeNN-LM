@@ -19,7 +19,7 @@ from pathlib import Path
 
 import torch
 from huggingface_hub import HfApi, snapshot_download
-from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer, Qwen3_5ForCausalLM
+from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "src"), str(ROOT / "scripts")]
@@ -93,10 +93,21 @@ def load_memory_fusion(local: Path):
         layers = [int(x) for x in payload.get("target_layers", [])]
         config = Qwen35MemoryFusionConfig.from_dict(payload.get("config", {}))
         state = payload["attention_state"]
-    model = Qwen3_5ForCausalLM.from_pretrained(base, dtype=dtype, attn_implementation="sdpa", low_cpu_mem_usage=True).to(device).eval()
+
+    # Do not import Qwen3_5ForCausalLM directly. Some Transformers builds register
+    # Qwen3.5 with AutoModelForCausalLM but do not export the concrete class at
+    # transformers.Qwen3_5ForCausalLM. AutoModel keeps the exporter compatible
+    # with both native registrations and repositories that provide remote code.
+    model = AutoModelForCausalLM.from_pretrained(
+        base,
+        trust_remote_code=True,
+        dtype=dtype,
+        attn_implementation="sdpa",
+        low_cpu_mem_usage=True,
+    ).to(device).eval()
     replace_attention_layers(model, config, layers)
     load_selected_attention_state(model, state, layers)
-    return model, AutoTokenizer.from_pretrained(base, use_fast=True), "memory-fusion reconstruction"
+    return model, AutoTokenizer.from_pretrained(base, trust_remote_code=True, use_fast=True), "memory-fusion reconstruction"
 
 
 def load_source(repo_id: str, local: Path, token: str):
