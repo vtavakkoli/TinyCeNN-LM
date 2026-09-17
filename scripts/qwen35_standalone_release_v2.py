@@ -4,7 +4,7 @@
 This delegates the working MemoryFusion/CeNN packaging pipeline to
 qwen35_standalone_release.py and replaces only the PDelta3 source loader.
 Older PDelta3 checkpoints were saved with ``model.language_model.*`` names,
-while current Qwen3_5ForCausalLM uses ``model.*`` names.  The base Qwen model
+while current Qwen3_5ForCausalLM uses ``model.*`` names. The base Qwen model
 is loaded first, the PDelta3 layers are reconstructed, and then every compatible
 checkpoint tensor is overlaid with an explicit prefix translation.
 
@@ -96,9 +96,10 @@ def load_pdelta3_compat(local: Path, source: str, device: torch.device):
             "PDelta3 custom tensors were not fully mapped: " + str(missing_custom[:16])
         )
 
-    # Overlay checkpoint tensors on the frozen official base.  This intentionally
-    # preserves any old-wrapper-omitted frozen base fields (e.g. output-head aliases)
-    # while requiring every trained/custom replacement tensor to come from checkpoint.
+    # Overlay the old checkpoint on the frozen official base. The PDelta3 trainer
+    # froze the base model and trained only the replacement core/gates plus optional
+    # Q/K/V-side parameters, so old-wrapper-omitted frozen fields correctly stay at
+    # their original Qwen3.5 values. Every custom tensor is still required above.
     incompatible = model.load_state_dict(state, strict=False)
     unexpected = list(incompatible.unexpected_keys)
     if unexpected:
@@ -118,8 +119,19 @@ def load_pdelta3_compat(local: Path, source: str, device: torch.device):
     return model.to(device).eval(), tokenizer, "PDelta3 old-wrapper compatibility reconstruction"
 
 
-# Patch only PDelta3; MemoryFusion and CeNN Integrated keep the already validated path.
+def _upload_folder_current(self, repo_id, repo_type, folder_path, **kwargs):
+    """Compatibility shim: old release core calls deprecated upload_large_folder."""
+    return self.upload_folder(
+        repo_id=repo_id,
+        repo_type=repo_type,
+        folder_path=folder_path,
+        commit_message="Upload validated TinyCeNN standalone release",
+    )
+
+
+# Patch only compatibility seams; validated MemoryFusion/CeNN logic stays unchanged.
 release.load_pdelta3_strict = load_pdelta3_compat
+release.HfApi.upload_large_folder = _upload_folder_current
 
 
 if __name__ == "__main__":
