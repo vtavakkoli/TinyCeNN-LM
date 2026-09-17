@@ -1,5 +1,7 @@
 # TinyCeNN-LM
 
+New experiment: **[nonlinear recurrent readout](NONLINEAR_READOUT.md)** with separate SmolLM2-135M and Qwen3.5-0.8B Colabs, shared 0/1/2-step refinement, cached decoding, and quality/speed/memory comparisons. GPU results are not yet established.
+
 **Researching CeNN/recurrent-memory alternatives to selected Transformer attention layers without throwing away pretrained language-model capability.**
 
 TinyCeNN-LM has grown from the original Tiny-LLM CeNN adapter into a model-replacement research lab spanning **SmolLM2, Qwen3.5, FunctionGemma and Gemma 4**. The repository intentionally keeps negative results and ablations, but they are no longer all equal entry points.

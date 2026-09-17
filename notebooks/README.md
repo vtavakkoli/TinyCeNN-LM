@@ -13,6 +13,10 @@ The `notebooks/` directory contains the full research history. To avoid picking 
 
 ## Active, not yet promoted
 
+- [SmolLM2 nonlinear recurrent readout](SmolLM2_Nonlinear_Recurrent_Readout_Colab.ipynb) — new shared nonlinear refinement experiment.
+- [Qwen3.5 nonlinear recurrent readout](Qwen3_5_0_8B_Nonlinear_Recurrent_Readout_Colab.ipynb) — same R0/R1/R2 comparison on Qwen full-attention layers.
+- Setup, equations, protocol and limitations: [Nonlinear readout guide](../NONLINEAR_READOUT.md).
+
 - `Qwen3_5_0_8B_MemoryFusion_Sequential_Acceptance_Colab.ipynb`
 - `Qwen3_5_0_8B_PDelta3_CLVR_Sequential_Colab.ipynb`
 - `Gemma4_E2B_PDelta3_CLVR_Sequential_Colab.ipynb`

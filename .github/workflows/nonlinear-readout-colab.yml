@@ -1,0 +1,46 @@
+name: Nonlinear recurrent readout Colabs
+
+on:
+  push:
+    paths:
+      - 'src/tinycenn_lm/nonlinear_readout.py'
+      - 'src/tinycenn_lm/research_layers.py'
+      - 'src/tinycenn_lm/pdelta3_frontier.py'
+      - 'scripts/benchmark_nonlinear_readout.py'
+      - 'notebooks/*Nonlinear_Recurrent_Readout_Colab.ipynb'
+      - 'tests/test_nonlinear_readout.py'
+      - '.github/workflows/nonlinear-readout-colab.yml'
+  pull_request:
+    paths:
+      - 'src/tinycenn_lm/nonlinear_readout.py'
+      - 'src/tinycenn_lm/research_layers.py'
+      - 'src/tinycenn_lm/pdelta3_frontier.py'
+      - 'scripts/benchmark_nonlinear_readout.py'
+      - 'notebooks/*Nonlinear_Recurrent_Readout_Colab.ipynb'
+      - 'tests/test_nonlinear_readout.py'
+      - '.github/workflows/nonlinear-readout-colab.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  offline-model-and-notebook-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install the Colab dependency profile on CPU
+        run: |
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install 'transformers==5.17.0' 'datasets==4.8.5' pytest nbformat pandas matplotlib sentencepiece
+          python -m pip install -e . --no-deps
+      - name: Validate recurrence, both model families, resume and notebooks
+        run: python -m pytest -q tests/test_nonlinear_readout.py tests/test_research_layers.py tests/test_pdelta3_frontier.py
