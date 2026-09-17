@@ -38,6 +38,16 @@ def delta_recurrence(q, k, z, erase, log_decay, memory, groups, chunk_size=32):
     """
     if not 1 <= chunk_size <= 32:
         raise ValueError("chunk_size must be in [1,32] for the bounded-decay reference")
+    if q.shape[2] == 1:
+        # Decode has no within-chunk interactions: avoid a 1x1 triangular solve
+        # and GQA state materialization. Algebra matches delta_token_reference.
+        memory = log_decay[:, :, 0].exp().unsqueeze(-1) * memory
+        residual = z[:, :, 0] - torch.einsum("bhf,bhfv->bhv", erase[:, :, 0], memory)
+        memory = memory + k[:, :, 0, :, None] * residual.unsqueeze(-2)
+        b, hk, features, _ = memory.shape
+        grouped_q = q[:, :, 0].reshape(b, hk, groups, features)
+        out = torch.einsum("bhgf,bhfv->bhgv", grouped_q, memory)
+        return out.reshape(b, hk * groups, 1, -1), memory
     outputs = []
     for start in range(0, q.shape[2], chunk_size):
         stop = min(start + chunk_size, q.shape[2])

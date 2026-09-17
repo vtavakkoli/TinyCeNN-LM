@@ -15,6 +15,8 @@ This file is the canonical guide to the model zoo. The repository intentionally 
 
 ## Active experiments
 
+- **Nonlinear recurrent readout (SmolLM2 / Qwen3.5)** — new controlled R0/R1/R2 experiment with cached decoding. Not yet GPU-validated; see [NONLINEAR_READOUT.md](NONLINEAR_READOUT.md).
+
 These are worth keeping for research, but they are **not current winners**:
 
 - `Qwen3_5_0_8B_MemoryFusion_Sequential_Acceptance_Colab.ipynb` — active strict-gated MemoryFusion experiment. The current run has accepted only part of the target full-attention anchors, so do not present it as a finished replacement.
