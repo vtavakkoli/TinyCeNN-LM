@@ -59,7 +59,7 @@ def load_model(dtype, device):
 
 
 def build_student(dtype, device, cfg, adjacency, seed):
-    base.set_seed(seed)
+    base.base.set_seed(seed)
     model = load_model(dtype, device)
     replace_ffns_with_fly_v2(model, cfg, adjacency)
     assert_qwen35_flyffn_v2(model, cfg.anchor_every)
@@ -113,9 +113,9 @@ def train_variant(name, adjacency, teacher, tokenizer, cfg, calib_batches, probe
 
 def main():
     args = parse_args()
-    base.set_seed(args.seed)
+    base.base.set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dtype = base.choose_dtype(device)
+    dtype = base.base.choose_dtype(device)
     if device.type == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = True
     print(
