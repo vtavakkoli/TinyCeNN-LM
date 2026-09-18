@@ -328,7 +328,7 @@ def main():
         )
         print(f"HUGGINGFACE {hf_url}", flush=True)
 
-    print("\nQWEN3.5 FLYFFN-V2 CHECK", flush=True)
+    print("\nQWEN3.5 FLYFFN-V3 ALL-FFN CHECK", flush=True)
     print("Token mixers unchanged: True", flush=True)
     print(f"FlyFFN-v3 layers: {len(fly_layers)}/{len(bio.model.layers)} | dense anchors: 0", flush=True)
     print(f"Dense-equivalence max logit diff: {bio_eq}", flush=True)
