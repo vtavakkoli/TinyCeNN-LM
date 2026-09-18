@@ -69,6 +69,9 @@ def _write_readme(export_dir: Path, metadata: dict[str, Any] | None = None) -> N
     ce_gap = metadata.get("fly_ce_gap_vs_qwen", "N/A")
     ppl_ratio = metadata.get("fly_ppl_ratio_vs_qwen", "N/A")
     anchors = metadata.get("dense_anchor_layers", [])
+    architecture = metadata.get("architecture", "Qwen3.5-0.8B + FlyFFN")
+    is_v3 = "v3" in architecture.lower()
+    variant = "FlyFFN-v3 All-FFN" if is_v3 else "FlyFFN-v2"
     readme = f"""---
 license: apache-2.0
 library_name: transformers
@@ -81,10 +84,11 @@ tags:
 - experimental
 ---
 
-# Qwen3.5-0.8B FlyFFN-v2 Standalone
+# Qwen3.5-0.8B {variant} Standalone
 
-Experimental FFN-only FlyFFN-v2 conversion of Qwen3.5-0.8B.
+Experimental FFN-only {variant} conversion of Qwen3.5-0.8B.
 
+- Architecture: {architecture}
 - Qwen token mixers remain unchanged.
 - Dense FFN anchors: {anchors}
 - Training/evaluation CE gap versus teacher: {ce_gap}
