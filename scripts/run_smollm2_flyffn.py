@@ -70,21 +70,195 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 
+def _proxy_graph(fly_nodes, max_edges, seed):
+    """Deterministic sparse small-world proxy used only when FlyWire download is unavailable."""
+    rng = np.random.default_rng(seed + 991)
+    src, dst, weight = [], [], []
+
+    # Ring lattice keeps every node connected.
+    local_k = max(2, min(6, fly_nodes // 16))
+    for s in range(fly_nodes):
+        for off in range(1, local_k + 1):
+            d = (s + off) % fly_nodes
+            src.append(s)
+            dst.append(d)
+            weight.append(1.0 / off)
+
+    # Add deterministic long-range edges up to the requested budget.
+    target = max(len(src), int(max_edges))
+    seen = set(zip(src, dst))
+    while len(src) < target:
+        s = int(rng.integers(0, fly_nodes))
+        d = int(rng.integers(0, fly_nodes))
+        if s == d or (s, d) in seen:
+            continue
+        seen.add((s, d))
+        src.append(s)
+        dst.append(d)
+        weight.append(float(rng.lognormal(mean=-0.2, sigma=0.7)))
+
+    src = np.asarray(src[:max_edges], dtype=np.int64)
+    dst = np.asarray(dst[:max_edges], dtype=np.int64)
+    weight = np.asarray(weight[:max_edges], dtype=np.float32)
+
+    incoming = np.zeros(fly_nodes, dtype=np.float32)
+    np.add.at(incoming, dst, weight)
+    weight = weight / np.maximum(incoming[dst], 1e-6)
+
+    def dense_adjacency(dst_array):
+        a = torch.zeros(fly_nodes, fly_nodes, dtype=torch.float32)
+        for s, d, w in zip(src, dst_array, weight):
+            a[int(d), int(s)] += float(w)
+        row_sum = a.abs().sum(dim=1, keepdim=True).clamp_min(1.0)
+        return a / row_sum
+
+    bio_proxy = dense_adjacency(dst)
+    dst_rewired = dst.copy()
+    rng.shuffle(dst_rewired)
+    rewired = dense_adjacency(dst_rewired)
+    return bio_proxy, rewired, int(len(src))
+
+
+def _download_graph_with_retry(graph_file, cache_dir, retries=5):
+    urls = [
+        GRAPH_URL,
+        "https://zenodo.org/records/21549559/files/connections_biological.csv.gz",
+        "https://zenodo.org/api/records/21549559/files/connections_biological.csv.gz/content",
+    ]
+    part_file = graph_file.with_suffix(graph_file.suffix + ".part")
+    errors = []
+
+    for url in urls:
+        for attempt in range(1, retries + 1):
+            try:
+                existing = part_file.stat().st_size if part_file.exists() else 0
+                headers = {"Range": f"bytes={existing}-"} if existing > 0 else {}
+                print(
+                    f"FlyWire download attempt {attempt}/{retries} "
+                    f"via {url} resume={existing/1024**2:.1f} MiB",
+                    flush=True,
+                )
+                with requests.get(
+                    url,
+                    stream=True,
+                    timeout=(20, 180),
+                    headers=headers,
+                    allow_redirects=True,
+                ) as r:
+                    # Some endpoints ignore Range and return 200; restart in that case.
+                    if existing > 0 and r.status_code == 200:
+                        part_file.unlink(missing_ok=True)
+                        existing = 0
+                    r.raise_for_status()
+                    total_header = int(r.headers.get("content-length", 0) or 0)
+                    total = total_header + existing if r.status_code == 206 else total_header
+                    mode = "ab" if existing > 0 and r.status_code == 206 else "wb"
+                    with open(part_file, mode) as fh, tqdm(
+                        total=total if total > 0 else None,
+                        initial=existing if total > 0 else 0,
+                        unit="B",
+                        unit_scale=True,
+                        desc="FlyWire graph",
+                    ) as bar:
+                        for chunk in r.iter_content(1024 * 1024):
+                            if chunk:
+                                fh.write(chunk)
+                                bar.update(len(chunk))
+
+                # Validate the gzip/CSV before promoting it to cache.
+                test = pd.read_csv(
+                    part_file,
+                    usecols=["pre_root_id", "post_root_id", "syn_count"],
+                    compression="gzip",
+                    nrows=8,
+                )
+                if len(test) == 0:
+                    raise RuntimeError("downloaded graph file is empty")
+                part_file.replace(graph_file)
+                (cache_dir / "graph_source.json").write_text(
+                    json.dumps(
+                        {
+                            "source": "FlyWire biological / Zenodo 21549559",
+                            "mode": "biological",
+                            "url": url,
+                            "file": str(graph_file),
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                print("FlyWire biological graph download verified ✓", flush=True)
+                return True
+            except Exception as exc:
+                errors.append(f"{url} attempt {attempt}: {type(exc).__name__}: {exc}")
+                print(
+                    f"FlyWire download failed ({type(exc).__name__}): {exc}",
+                    flush=True,
+                )
+                if attempt < retries:
+                    time.sleep(min(2 ** attempt, 20))
+
+    print("WARNING: all FlyWire download endpoints failed.", flush=True)
+    for msg in errors[-6:]:
+        print("  ", msg, flush=True)
+    return False
+
+
 def extract_graph(fly_nodes, max_edges, seed, cache_dir):
     print("STAGE graph: preparing FlyWire topology", flush=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
     graph_file = cache_dir / "connections_biological.csv.gz"
+
+    # Validate cached file first. A truncated .gz from a previous timeout is discarded.
+    if graph_file.exists():
+        try:
+            pd.read_csv(
+                graph_file,
+                usecols=["pre_root_id", "post_root_id", "syn_count"],
+                compression="gzip",
+                nrows=8,
+            )
+            print(
+                f"Using cached FlyWire graph: {graph_file} "
+                f"({graph_file.stat().st_size/1024**2:.1f} MiB)",
+                flush=True,
+            )
+        except Exception as exc:
+            print(f"Cached FlyWire graph is invalid; deleting it: {exc}", flush=True)
+            graph_file.unlink(missing_ok=True)
+
     if not graph_file.exists():
-        with requests.get(GRAPH_URL, stream=True, timeout=120) as r:
-            r.raise_for_status()
-            total = int(r.headers.get("content-length", 0))
-            with open(graph_file, "wb") as f, tqdm(
-                total=total, unit="B", unit_scale=True, desc="FlyWire graph"
-            ) as bar:
-                for chunk in r.iter_content(1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
-                        bar.update(len(chunk))
+        ok = _download_graph_with_retry(graph_file, cache_dir)
+        if not ok:
+            print(
+                "WARNING: using deterministic PROXY topology so the experiment can continue. "
+                "Results from this run MUST NOT be reported as a biological-vs-rewired FlyWire test.",
+                flush=True,
+            )
+            bio, rewired, edge_count = _proxy_graph(
+                fly_nodes=fly_nodes,
+                max_edges=max_edges,
+                seed=seed,
+            )
+            (cache_dir / "graph_source.json").write_text(
+                json.dumps(
+                    {
+                        "source": "deterministic local small-world proxy",
+                        "mode": "proxy",
+                        "reason": "FlyWire Zenodo download unavailable after retries",
+                        "fly_nodes": int(fly_nodes),
+                        "max_edges": int(max_edges),
+                        "seed": int(seed),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            print(
+                f"Proxy graph ready: {fly_nodes} nodes, {edge_count} edges",
+                flush=True,
+            )
+            return bio, rewired, edge_count
 
     cols = ["pre_root_id", "post_root_id", "syn_count"]
     degree = pd.Series(dtype=np.float64)
@@ -154,7 +328,6 @@ def extract_graph(fly_nodes, max_edges, seed, cache_dir):
     rewired = dense_adjacency(dst_rewired)
     print(f"Graph ready: {fly_nodes} nodes, {len(src)} edges", flush=True)
     return bio, rewired, int(len(src))
-
 
 def token_blocks(tokenizer, seed, needed, seq_len):
     ds = load_dataset(
