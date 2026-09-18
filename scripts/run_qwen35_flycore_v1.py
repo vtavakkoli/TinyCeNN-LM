@@ -531,12 +531,19 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    graph_cache = Path("/content/qwen35_flycore_cache")
     bio_adj, rew_adj, edge_count = base.base.extract_graph(
         args.fly_nodes,
         args.max_edges,
         args.seed,
-        Path("/content/qwen35_flycore_cache"),
+        graph_cache,
     )
+    graph_source_path = graph_cache / "graph_source.json"
+    if graph_source_path.exists():
+        graph_source = json.loads(graph_source_path.read_text(encoding="utf-8"))
+    else:
+        graph_source = {"source": "unknown", "mode": "unknown"}
+    print("GRAPH SOURCE", json.dumps(graph_source, indent=2), flush=True)
 
     print("STAGE loading Qwen3.5-0.8B teacher/tokenizer", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL, use_fast=True)
@@ -791,6 +798,7 @@ def main():
         "fly_lm_head": True,
         "shared_fly_vocab_core": True,
         "qwen_layer_types": layer_types,
+        "graph_source": graph_source,
         "factorization": factor_stats,
         "initial_fly_vocab_probe": bio_initial,
         "vocab_calibration_biological": bio_vocab_metrics,
