@@ -236,13 +236,20 @@ class FlyVocabCoreV2(nn.Module):
             logits.index_add_(-1, self.hot_token_ids.long(), corr)
         return logits
 
-    def effective_hot_weight(self) -> Tensor:
+    def effective_hot_weight(self, hot_index: Tensor | None = None) -> Tensor:
         if not self.hot_token_ids.numel():
             return torch.empty(
                 0, self.hidden_size, device=self.basis.device, dtype=self.basis.dtype
             )
-        z = self.transform(self.codebook(self.hot_token_ids))
-        return torch.matmul(z, self.basis) + self.hot_residual
+        if hot_index is None:
+            token_ids = self.hot_token_ids
+            residual = self.hot_residual
+        else:
+            hot_index = hot_index.long()
+            token_ids = self.hot_token_ids[hot_index]
+            residual = self.hot_residual[hot_index]
+        z = self.transform(self.codebook(token_ids))
+        return torch.matmul(z, self.basis) + residual
 
     def parameter_stats(self) -> dict[str, int | float]:
         original = self.vocab_size * self.hidden_size
