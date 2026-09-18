@@ -26,6 +26,7 @@ from tinycenn_lm.qwen35_flyffn_v2 import (
     replace_ffns_with_fly_v2,
     routing_schedule,
 )
+from tinycenn_lm.qwen35_standalone import export_standalone, upload_standalone
 
 # Reuse the already-tested v2 training utilities; this runner only adapts the backbone.
 _V2_PATH = Path(__file__).with_name("run_smollm2_flyffn_v2.py")
@@ -52,6 +53,10 @@ def parse_args():
     p.add_argument("--max-ce-gap", type=float, default=None)
     p.add_argument("--rewired", action="store_true")
     p.add_argument("--output-dir", default="results/flyffn_v2_qwen35_08b")
+    p.add_argument("--standalone-dir", default=None)
+    p.add_argument("--upload-hf", action="store_true")
+    p.add_argument("--hf-repo-id", default=None)
+    p.add_argument("--hf-private", action="store_true")
     p.add_argument("--seed", type=int, default=5321)
     return p.parse_args()
 
@@ -296,6 +301,35 @@ def main():
     (out_dir / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     torch.save(bio_state, out_dir / "biological_qwen35_flyffn_v2.pt")
 
+    standalone_dir = Path(args.standalone_dir) if args.standalone_dir else out_dir / "standalone"
+    print("\nSTAGE exporting verified standalone model", flush=True)
+    manifest = export_standalone(
+        bio,
+        tokenizer,
+        cfg,
+        standalone_dir,
+        metadata=report,
+        artifacts_dir=out_dir,
+    )
+    print(
+        f"STANDALONE verified=True state_keys={manifest['state_keys']} "
+        f"flyffn_keys={manifest['flyffn_state_keys']} "
+        f"size_gb={manifest['state_bytes'] / 1024**3:.3f}",
+        flush=True,
+    )
+
+    hf_url = None
+    if args.upload_hf:
+        if not args.hf_repo_id:
+            raise RuntimeError("--upload-hf requires --hf-repo-id")
+        print(f"STAGE uploading verified standalone model to {args.hf_repo_id}", flush=True)
+        hf_url = upload_standalone(
+            standalone_dir,
+            args.hf_repo_id,
+            private=args.hf_private,
+        )
+        print(f"HUGGINGFACE {hf_url}", flush=True)
+
     print("\nQWEN3.5 FLYFFN-V2 CHECK", flush=True)
     print("Token mixers unchanged: True", flush=True)
     print(f"FlyFFN-v2 layers: {len(fly_layers)} | dense anchors: {anchors}", flush=True)
@@ -316,6 +350,9 @@ def main():
         print("USER:", item["prompt"], flush=True)
         print("FLY:", item["reply"], flush=True)
     print("\nSaved:", out_dir, flush=True)
+    print("Standalone:", standalone_dir, flush=True)
+    if hf_url:
+        print("Hugging Face:", hf_url, flush=True)
 
 
 if __name__ == "__main__":
