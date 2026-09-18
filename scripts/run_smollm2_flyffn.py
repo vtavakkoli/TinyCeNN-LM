@@ -511,7 +511,7 @@ def main():
     )
     temp = build_student(dtype, device, cfg, bio_adj, args.seed)
     layers = [m.layer_idx for m in flyffn_modules(temp)]
-    n_groups = math.ceil(len(layers9 / calib_group_size)
+    n_groups = math.ceil(len(layers) / calib_group_size)
     del temp; gc.collect()
     if device.type == "cuda": torch.cuda.empty_cache()
     print(
