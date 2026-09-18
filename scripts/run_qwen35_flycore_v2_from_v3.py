@@ -209,6 +209,27 @@ def train_vocab_v2(
     initial_lrs = [g["lr"] for g in opt.param_groups]
     t0 = time.perf_counter()
 
+    def quality_score(m):
+        return (
+            max(float(m["ce_gap"]), 0.0)
+            + 0.15 * float(m["teacher_kl"])
+            + 0.10 * float(m["head_only_kl"])
+            + 0.05 * float(m["embedding_relative_mse"])
+        )
+
+    start_metrics = probe(student, teacher, probe_batches, device, dtype)
+    best_metrics = dict(start_metrics)
+    best_score = quality_score(start_metrics)
+    best_state = {
+        k: v.detach().cpu().clone()
+        for k, v in core.state_dict().items()
+    }
+    print(
+        f"VOCAB-V2 checkpoint start score={best_score:.5f} "
+        f"ce_gap={start_metrics['ce_gap']:.5f}",
+        flush=True,
+    )
+
     student.train()
     teacher.eval()
 
@@ -324,6 +345,41 @@ def train_vocab_v2(
                 flush=True,
             )
 
+        if update % 50 == 0 or update == updates:
+            student.eval()
+            checkpoint_metrics = probe(
+                student, teacher, probe_batches, device, dtype
+            )
+            score = quality_score(checkpoint_metrics)
+            is_best = score < best_score
+            print(
+                f"VOCAB-V2 PROBE update={update} score={score:.5f} "
+                f"ce_gap={checkpoint_metrics['ce_gap']:.5f} "
+                f"kl={checkpoint_metrics['teacher_kl']:.5f} "
+                f"head={checkpoint_metrics['head_only_kl']:.5f} "
+                f"best={is_best}",
+                flush=True,
+            )
+            if is_best:
+                best_score = score
+                best_metrics = dict(checkpoint_metrics)
+                del best_state
+                gc.collect()
+                best_state = {
+                    k: v.detach().cpu().clone()
+                    for k, v in core.state_dict().items()
+                }
+            student.train()
+
+    print(
+        f"VOCAB-V2 restoring best checkpoint score={best_score:.5f} "
+        f"ce_gap={best_metrics['ce_gap']:.5f}",
+        flush=True,
+    )
+    core.load_state_dict(best_state, strict=True)
+    del best_state
+    gc.collect()
+    student.eval()
     final_probe = probe(student, teacher, probe_batches, device, dtype)
     return final_probe, history
 
