@@ -145,8 +145,10 @@ def calibrate_progressively(name, student, teacher, calib_batches, probe_batches
                         mlp = student.model.layers[idx].mlp
                         p_teacher = mlp(teacher_caps[idx]["hidden"])
                         p_student = mlp(student_inputs[idx])
+                        with torch.no_grad():
+                            target_student = teacher.model.layers[idx].mlp(student_inputs[idx])
                         losses.append(base.mlp_alignment_loss(p_teacher, teacher_caps[idx]["target"]))
-                        losses.append(base.mlp_alignment_loss(p_student, teacher_caps[idx]["target"]))
+                        losses.append(base.mlp_alignment_loss(p_student, target_student))
                     align = torch.stack(losses).mean()
                     reg = flyffn_v2_router_regularizer(student, layer_group)
                     loss = align + 0.01 * reg
