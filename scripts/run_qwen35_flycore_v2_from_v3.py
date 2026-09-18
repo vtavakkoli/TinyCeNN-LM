@@ -263,7 +263,7 @@ def train_vocab_v2(
                     device=device,
                 ) % core.hot_token_ids.numel()
                 hot_ids = core.hot_token_ids[idx]
-                pred_hot = core.effective_hot_weight()[idx]
+                pred_hot = core.effective_hot_weight(idx)
                 ref_hot = teacher_weight[hot_ids].to(
                     pred_hot.device, pred_hot.dtype
                 )
