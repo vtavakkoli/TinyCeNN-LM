@@ -222,7 +222,7 @@ class ProgressiveFlySwiGLU(nn.Module):
             ys = F.linear(hidden, self.down_weight[shard])
             scale = self.shard_scale[shard].to(dtype=ys.dtype)
             weight = flat_weight[token_pos, slot_pos].to(dtype=ys.dtype).unsqueeze(-1)
-            out.index_add_(0, token_pos, ys * (scale * weight))
+            out = out.index_add(0, token_pos, ys * (scale * weight))
 
         return out.reshape(*x.shape[:-1], self.hidden_size)
 
