@@ -34,6 +34,8 @@ def _fly_keys(state: dict[str, torch.Tensor]) -> list[str]:
         ".mlp.up_weight",
         ".mlp.down_weight",
         ".mlp.output_scale",
+        ".mlp.shard_scale",
+        ".mlp.route_weight_mix_logit",
         ".mlp.active_k_state",
         ".mlp.route_mix_state",
         ".mlp.router.",
@@ -239,9 +241,11 @@ def load_standalone(
     replace_ffns_with_fly_v2(model, fly_cfg, adj.float())
 
     incompatible = model.load_state_dict(state, strict=False, assign=True)
+    optional_v31 = (".mlp.shard_scale", ".mlp.route_weight_mix_logit")
     important_missing = [
         k for k in incompatible.missing_keys
-        if k.startswith("flyffn_shared_graph.") or ".mlp." in k
+        if (k.startswith("flyffn_shared_graph.") or ".mlp." in k)
+        and not any(marker in k for marker in optional_v31)
     ]
     if important_missing:
         raise RuntimeError(f"Important FlyFFN weights missing: {important_missing[:20]}")
