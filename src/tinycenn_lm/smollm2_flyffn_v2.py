@@ -149,6 +149,15 @@ class ProgressiveFlySwiGLU(nn.Module):
             router_noise_std=float(config.router_noise_std),
         )
         self.output_scale = nn.Parameter(torch.ones(()))
+        # Per-shard calibration is applied only to the sparse branch.  Keeping it
+        # out of the dense path preserves exact teacher equivalence at route_mix=0.
+        self.shard_scale = nn.Parameter(torch.ones(e))
+        # Start close to uniform top-k weighting.  This is substantially more
+        # stable than immediately renormalizing potentially noisy router scores,
+        # while still allowing training to learn confidence-sensitive weighting.
+        self.route_weight_mix_logit = nn.Parameter(
+            torch.tensor(_logit(0.10), dtype=torch.float32)
+        )
         self.register_buffer("active_k_state", torch.tensor(e, dtype=torch.int64), persistent=True)
         self.register_buffer("route_mix_state", torch.tensor(0.0, dtype=torch.float32), persistent=True)
         self.last_router_stats: dict[str, Tensor] = {}
@@ -171,25 +180,67 @@ class ProgressiveFlySwiGLU(nn.Module):
         self.active_k_state.fill_(k)
         self.route_mix_state.fill_(mix)
 
-    def _all_shard_outputs(self, x: Tensor) -> Tensor:
-        gate = torch.einsum("bth,esh->btes", x, self.gate_weight)
-        up = torch.einsum("bth,esh->btes", x, self.up_weight)
-        hidden = F.silu(gate) * up
-        return torch.einsum("btes,ehs->bteh", hidden, self.down_weight)
+    def _dense_output(self, x: Tensor) -> Tensor:
+        """Dense SwiGLU using the original matrix layout.
+
+        A single dense GEMM sequence matches the source MLP numerics much more
+        closely than summing independently accumulated shard outputs.
+        """
+        gate_w = self.gate_weight.reshape(self.inner_size, self.hidden_size)
+        up_w = self.up_weight.reshape(self.inner_size, self.hidden_size)
+        down_w = self.down_weight.permute(1, 0, 2).reshape(self.hidden_size, self.inner_size)
+        hidden = F.silu(F.linear(x, gate_w)) * F.linear(x, up_w)
+        return F.linear(hidden, down_w)
+
+    def _selected_sparse_output(
+        self,
+        x: Tensor,
+        top_idx: Tensor,
+        top_weight: Tensor,
+    ) -> Tensor:
+        """Execute only selected shards.
+
+        This avoids the previous quality-prototype behavior of evaluating every
+        shard and discarding the unselected outputs.  The loop is over the small
+        number of shards, while matrix multiplies run only on assigned tokens.
+        """
+        flat_x = x.reshape(-1, self.hidden_size)
+        flat_idx = top_idx.reshape(-1, top_idx.shape[-1])
+        flat_weight = top_weight.reshape(-1, top_weight.shape[-1])
+        out = torch.zeros(
+            flat_x.shape[0], self.hidden_size, device=x.device, dtype=x.dtype
+        )
+
+        for shard in range(self.num_shards):
+            token_pos, slot_pos = torch.where(flat_idx == shard)
+            if token_pos.numel() == 0:
+                continue
+            xs = flat_x.index_select(0, token_pos)
+            gate = F.linear(xs, self.gate_weight[shard])
+            up = F.linear(xs, self.up_weight[shard])
+            hidden = F.silu(gate) * up
+            ys = F.linear(hidden, self.down_weight[shard])
+            scale = self.shard_scale[shard].to(dtype=ys.dtype)
+            weight = flat_weight[token_pos, slot_pos].to(dtype=ys.dtype).unsqueeze(-1)
+            out.index_add_(0, token_pos, ys * (scale * weight))
+
+        return out.reshape(*x.shape[:-1], self.hidden_size)
 
     def forward(self, x: Tensor) -> Tensor:
-        shard_out = self._all_shard_outputs(x)
-        dense_full = shard_out.sum(dim=2)
         mix = self.route_mix_state.to(device=x.device, dtype=torch.float32)
         k = self.active_k
 
-        if k == self.num_shards and self.route_mix == 0.0:
+        # Critical quality invariant: with routing disabled, this follows the
+        # exact dense SwiGLU computation instead of a sum of shard GEMMs.
+        if self.route_mix == 0.0:
+            dense_full = self._dense_output(x)
             self.last_router_stats = {
                 "load_balance": torch.tensor(1.0, device=x.device),
                 "z_loss": torch.tensor(0.0, device=x.device),
                 "entropy": torch.tensor(math.log(self.num_shards), device=x.device),
                 "graph_mix": torch.sigmoid(self.router.graph_mix_logit),
                 "output_scale": self.output_scale,
+                "route_weight_mix": torch.sigmoid(self.route_weight_mix_logit),
                 "route_mix": mix,
                 "active_k": torch.tensor(float(k), device=x.device),
             }
@@ -198,14 +249,22 @@ class ProgressiveFlySwiGLU(nn.Module):
         logits = self.router(x)
         probs = F.softmax(logits, dim=-1)
         top_values, top_idx = torch.topk(probs, k=k, dim=-1)
-        top_weight = top_values / top_values.sum(dim=-1, keepdim=True).clamp_min(1e-9)
-        gather_idx = top_idx.unsqueeze(-1).expand(*top_idx.shape, self.hidden_size)
-        selected = torch.gather(shard_out, dim=2, index=gather_idx)
-        sparse = (
-            selected * top_weight.to(dtype=selected.dtype).unsqueeze(-1)
-        ).sum(dim=2) * float(self.num_shards)
+
+        # Pure probability renormalization tends to over-amplify early router
+        # mistakes. Blend it with the unbiased uniform top-k estimator.
+        confidence_weight = top_values / top_values.sum(dim=-1, keepdim=True).clamp_min(1e-9)
+        uniform_weight = torch.full_like(confidence_weight, 1.0 / float(k))
+        confidence_mix = torch.sigmoid(self.route_weight_mix_logit.float())
+        top_weight = uniform_weight + confidence_mix * (confidence_weight - uniform_weight)
+        # Sum-of-shards estimator: E/k scaling is implicit via E * weights.
+        sparse = self._selected_sparse_output(x, top_idx, top_weight) * float(self.num_shards)
         sparse = self.output_scale.to(dtype=sparse.dtype) * sparse
-        out = dense_full + mix.to(dtype=dense_full.dtype) * (sparse - dense_full)
+
+        if self.route_mix >= 0.999999:
+            out = sparse
+        else:
+            dense_full = self._dense_output(x)
+            out = dense_full + mix.to(dtype=dense_full.dtype) * (sparse - dense_full)
 
         assignment = F.one_hot(top_idx, num_classes=self.num_shards).float().sum(dim=-2)
         assignment = assignment / float(k)
@@ -219,6 +278,7 @@ class ProgressiveFlySwiGLU(nn.Module):
             "probability_fraction": probability_fraction,
             "graph_mix": torch.sigmoid(self.router.graph_mix_logit),
             "output_scale": self.output_scale,
+            "route_weight_mix": confidence_mix,
             "route_mix": mix,
             "active_k": torch.tensor(float(k), device=x.device),
         }
@@ -299,7 +359,9 @@ def flyffn_v2_parameter_groups(model: nn.Module, layer_indices, router_lr: float
             p.requires_grad = True
             router_params.append(p)
         m.output_scale.requires_grad = True
-        router_params.append(m.output_scale)
+        m.shard_scale.requires_grad = True
+        m.route_weight_mix_logit.requires_grad = True
+        router_params.extend([m.output_scale, m.shard_scale, m.route_weight_mix_logit])
         for p in (m.gate_weight, m.up_weight, m.down_weight):
             p.requires_grad = True
             shard_params.append(p)
@@ -337,7 +399,7 @@ def flyffn_v2_stats(model: nn.Module) -> dict:
         "fully_sparse_layers": len([m for m in mods if m.route_mix >= 0.999 and m.active_k < m.num_shards]),
     }
     if stats:
-        for key in ("load_balance", "entropy", "graph_mix", "output_scale"):
+        for key in ("load_balance", "entropy", "graph_mix", "output_scale", "route_weight_mix"):
             vals = [s[key].detach().float() for s in stats if key in s]
             if vals:
                 out[f"mean_{key}"] = float(torch.stack(vals).mean().cpu())
