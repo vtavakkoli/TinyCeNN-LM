@@ -37,8 +37,8 @@ def parse_args():
     p.add_argument("--run-mode", choices=["quick", "strong"], default="quick")
     p.add_argument("--seq-len", type=int, default=128)
     p.add_argument("--batch-size", type=int, default=1)
-    p.add_argument("--vocab-latent-dim", type=int, default=896)
-    p.add_argument("--hot-token-count", type=int, default=16384)
+    p.add_argument("--vocab-latent-dim", type=int, default=768)
+    p.add_argument("--hot-token-count", type=int, default=8192)
     p.add_argument("--fly-nodes", type=int, default=256)
     p.add_argument("--graph-steps", type=int, default=1)
     p.add_argument("--vocab-graph-mix-init", type=float, default=0.05)
@@ -271,7 +271,18 @@ def main():
     train_batches = list(token_blocks(tokenizer, args.seed + 10, updates * args.batch_size, args.seq_len))
     probe_batches = list(token_blocks(tokenizer, args.seed + 777, 6 if args.run_mode == "quick" else 12, args.seq_len))
 
-    special_ids = [tokenizer.bos_token_id, tokenizer.eos_token_id, tokenizer.pad_token_id, tokenizer.unk_token_id]
+    # Preserve every tokenizer-declared special token plus all control tokens
+    # emitted by Qwen's chat template. These tokens are disproportionately
+    # important: approximating role/end markers can cause immediate EOS.
+    special_ids = set(int(x) for x in tokenizer.all_special_ids if x is not None)
+    chat_probe = tokenizer.apply_chat_template(
+        [{"role": "user", "content": "Hello"}, {"role": "assistant", "content": "Hello!"}],
+        tokenize=True,
+        add_generation_prompt=False,
+    )
+    special_ids.update(int(x) for x in chat_probe if int(x) >= int(teacher.config.vocab_size) - 512)
+    special_ids = sorted(special_ids)
+    print("Protected special/chat-control token ids:", special_ids, flush=True)
     hot_ids = choose_hot_tokens(
         train_batches[: min(256, len(train_batches))] + probe_batches,
         int(teacher.config.vocab_size),
