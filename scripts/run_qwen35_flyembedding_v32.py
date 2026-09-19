@@ -403,7 +403,7 @@ def main():
         "fly_embedding_v32_core":{k:v.detach().cpu() for k,v in student.fly_embedding_v32_core.state_dict().items()},
         "config":cfg.to_dict(), "base_model":args.base_model,
         "selected_step":best_step,
-    }, out_dir/"fly_embedding_v322_adapter.pt")
+    }, out_dir/"fly_embedding_v32_adapter.pt")
 
     stats = student.fly_embedding_v32_core.parameter_stats(original_embedding.weight.numel())
     quality = bool(
