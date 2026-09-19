@@ -219,6 +219,68 @@ def assert_fly_embedding_v3_identity(
     return {"exact_identity": exact, "max_abs_embedding_error": max_abs}
 
 
+
+@torch.no_grad()
+def materialize_fly_embedding_v3(
+    model: nn.Module,
+    *,
+    chunk_rows: int = 4096,
+) -> nn.Module:
+    """Convert FlyEmbedding-v3 into a plain HF-compatible embedding matrix.
+
+    The Fly adapter depends only on each token embedding, so its effective
+    result can be precomputed once for the entire vocabulary. The output LM
+    head is cloned before replacing the input embedding so originally tied
+    input/output weights preserve Qwen's original output projection.
+    """
+    assert_qwen35_fly_embedding_v3(model)
+    wrapper = model.model.embed_tokens
+    base = wrapper.base_embedding
+    core = wrapper.core
+
+    vocab = int(base.num_embeddings)
+    hidden = int(base.embedding_dim)
+    device = base.weight.device
+    dtype = base.weight.dtype
+
+    old_head = model.lm_head
+    head_weight = old_head.weight.detach().clone()
+    new_head = nn.Linear(
+        hidden,
+        int(head_weight.shape[0]),
+        bias=getattr(old_head, "bias", None) is not None,
+        device=device,
+        dtype=head_weight.dtype,
+    )
+    new_head.weight.copy_(head_weight)
+    if getattr(old_head, "bias", None) is not None:
+        new_head.bias.copy_(old_head.bias.detach())
+
+    effective = torch.empty(vocab, hidden, device="cpu", dtype=dtype)
+    was_training = core.training
+    core.eval()
+    for lo in range(0, vocab, int(chunk_rows)):
+        hi = min(lo + int(chunk_rows), vocab)
+        ids = torch.arange(lo, hi, device=device, dtype=torch.long)
+        adapted = core(base(ids))
+        effective[lo:hi].copy_(adapted.detach().cpu())
+    core.train(was_training)
+
+    new_embedding = nn.Embedding(vocab, hidden, device=device, dtype=dtype)
+    new_embedding.weight.copy_(effective.to(device=device, dtype=dtype))
+
+    model.model.embed_tokens = new_embedding
+    model.lm_head = new_head
+    if hasattr(model.config, "tie_word_embeddings"):
+        model.config.tie_word_embeddings = False
+    try:
+        model._tied_weights_keys = {}
+    except Exception:
+        pass
+    if hasattr(model, "fly_embedding_v3_core"):
+        delattr(model, "fly_embedding_v3_core")
+    return model
+
 def assert_qwen35_fly_embedding_v3(model: nn.Module) -> None:
     core = getattr(model, "fly_embedding_v3_core", None)
     if not isinstance(core, FlyResidualCoreV3):
@@ -238,4 +300,5 @@ __all__ = [
     "freeze_qwen_train_fly_v3",
     "assert_fly_embedding_v3_identity",
     "assert_qwen35_fly_embedding_v3",
+    "materialize_fly_embedding_v3",
 ]
