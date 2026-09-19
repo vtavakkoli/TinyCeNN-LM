@@ -319,6 +319,59 @@ def initialize_fly_vocab_v2(
         core.hot_residual.copy_(target - base)
 
 
+
+def install_fly_embedding_v2(
+    model: nn.Module,
+    config: FlyVocabV2Config,
+    adjacency: Tensor,
+    hot_token_ids: Tensor,
+    *,
+    factorization: dict[str, Tensor | float],
+    teacher_weight: Tensor,
+) -> nn.Module:
+    """Replace only the input embedding; keep Qwen's original LM head untouched."""
+    config.validate(model.config, adjacency)
+    old_embed = model.model.embed_tokens
+    reference = old_embed.weight
+
+    core = FlyVocabCoreV2(
+        int(model.config.vocab_size),
+        int(model.config.hidden_size),
+        config,
+        adjacency,
+        hot_token_ids,
+        device=reference.device,
+        dtype=reference.dtype,
+    )
+    initialize_fly_vocab_v2(core, factorization, teacher_weight)
+
+    model.fly_vocab_core_v2 = core
+    model.model.embed_tokens = FlyEmbeddingV2(core)
+
+    # The output projection must stay as the original Qwen head. Breaking the
+    # embedding tie is intentional: the experiment compresses input embeddings
+    # only, avoiding vocabulary-ranking / early-EOS drift in the LM head.
+    if hasattr(model.config, "tie_word_embeddings"):
+        model.config.tie_word_embeddings = False
+    try:
+        model._tied_weights_keys = {}
+    except Exception:
+        pass
+    return model
+
+
+def assert_qwen35_fly_embedding_v2(model: nn.Module) -> None:
+    core = getattr(model, "fly_vocab_core_v2", None)
+    if not isinstance(core, FlyVocabCoreV2):
+        raise RuntimeError("FlyVocabCoreV2 missing")
+    if not isinstance(model.model.embed_tokens, FlyEmbeddingV2):
+        raise RuntimeError("input embedding is not FlyEmbeddingV2")
+    if model.model.embed_tokens.core is not core:
+        raise RuntimeError("FlyEmbeddingV2 does not reference fly_vocab_core_v2")
+    if isinstance(model.lm_head, FlyLMHeadV2):
+        raise RuntimeError("LM head was replaced; input-only mode must keep Qwen lm_head")
+
+
 def install_fly_vocab_v2(
     model: nn.Module,
     config: FlyVocabV2Config,
@@ -393,7 +446,9 @@ __all__ = [
     "FlyLMHeadV2",
     "factorize_embedding_weight_v2",
     "choose_hot_tokens",
+    "install_fly_embedding_v2",
     "install_fly_vocab_v2",
+    "assert_qwen35_fly_embedding_v2",
     "assert_qwen35_flycore_v2",
     "freeze_source_ffn_train_vocab",
     "FlyFFNV3Config",
