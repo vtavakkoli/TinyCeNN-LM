@@ -16,6 +16,7 @@ if str(SRC_DIR) not in sys.path:
 
 import pandas as pd
 import torch
+from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from tinycenn_lm.qwen35_flyffn_v3 import (
@@ -54,6 +55,12 @@ def parse_args():
                    help="After global distillation, selectively relax sparse routing on sensitive layers until the CE gate is recovered.")
     p.add_argument("--rescue-probe-batches", type=int, default=4,
                    help="Number of held-out probe batches used by adaptive quality rescue.")
+    p.add_argument("--calib-pool-blocks", type=int, default=None,
+                   help="Bounded reusable calibration pool. Defaults: quick=128, strong=384.")
+    p.add_argument("--train-pool-blocks", type=int, default=None,
+                   help="Bounded reusable training pool. Defaults: quick=256, strong=1024.")
+    p.add_argument("--stream-shuffle-buffer", type=int, default=256,
+                   help="FineWeb streaming shuffle buffer; kept small for Colab system RAM.")
     p.add_argument("--rewired", action="store_true")
     p.add_argument("--output-dir", default="results/flyffn_v3_qwen35_08b")
     p.add_argument("--standalone-dir", default=None)
@@ -78,6 +85,70 @@ def build_student(dtype, device, cfg, adjacency, seed):
     replace_all_ffns_with_fly_v3(model, cfg, adjacency)
     assert_qwen35_flyffn_v3(model)
     return model
+
+
+def memory_safe_token_blocks(tokenizer, seed, needed, seq_len, shuffle_buffer=256):
+    """Yield bounded FineWeb-Edu token blocks without large host-RAM spikes.
+
+    The original shared helper uses a 2048-document streaming shuffle buffer and
+    can tokenize arbitrarily long documents in one shot.  With Qwen3.5-0.8B
+    already resident, standard Colab can be killed by the OS before training.
+    This variant keeps the shuffle buffer small and caps per-document tokenization.
+    """
+    needed = int(needed)
+    if needed <= 0:
+        return
+    ds = load_dataset(
+        "HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True
+    ).shuffle(seed=int(seed), buffer_size=max(32, int(shuffle_buffer)))
+    eos = tokenizer.eos_token_id
+    max_doc_tokens = max(int(seq_len) * 8, int(seq_len) + 1)
+    buf, produced = [], 0
+    for row in ds:
+        text = str(row.get("text", "")).strip()
+        if not text:
+            continue
+        ids = tokenizer(
+            text,
+            add_special_tokens=False,
+            verbose=False,
+            truncation=True,
+            max_length=max_doc_tokens,
+        )["input_ids"]
+        if not ids:
+            continue
+        buf.extend(ids)
+        if eos is not None:
+            buf.append(eos)
+        while len(buf) >= seq_len + 1 and produced < needed:
+            yield torch.tensor(buf[: seq_len + 1], dtype=torch.long)
+            del buf[: seq_len + 1]
+            produced += 1
+        if produced >= needed:
+            return
+
+
+def make_safe_pool(tokenizer, seed, requested_blocks, pool_cap, seq_len, batch_size, shuffle_buffer, label):
+    blocks = min(int(requested_blocks), int(pool_cap))
+    blocks = max(blocks, int(batch_size))
+    # Keep block count divisible by batch size so no materialized examples are discarded.
+    blocks -= blocks % int(batch_size)
+    print(
+        f"DATA {label}: requested={requested_blocks} blocks | materializing={blocks} "
+        f"(reused cyclically) | shuffle_buffer={shuffle_buffer}",
+        flush=True,
+    )
+    tensors = list(
+        memory_safe_token_blocks(
+            tokenizer, seed, blocks, seq_len, shuffle_buffer=shuffle_buffer
+        )
+    )
+    if len(tensors) < blocks:
+        raise RuntimeError(f"{label}: FineWeb stream produced only {len(tensors)}/{blocks} blocks")
+    batches = base.base.make_batches(tensors, batch_size)
+    del tensors
+    gc.collect()
+    return batches
 
 
 @torch.no_grad()
@@ -218,13 +289,17 @@ def main():
     if args.run_mode == "quick":
         steps_per_stage, group_size = 4, 2
         train_updates, grad_accum, eval_count, probe_count = 600, 1, 12, 4
+        default_calib_pool, default_train_pool = 128, 256
         max_ce_gap = 0.25 if args.max_ce_gap is None else args.max_ce_gap
     else:
         # Layer-wise quality gating prevents one difficult layer from forcing
         # two neighboring layers to roll back with it.
         steps_per_stage, group_size = 8, 1
         train_updates, grad_accum, eval_count, probe_count = 4000, 2, 24, 8
+        default_calib_pool, default_train_pool = 384, 1024
         max_ce_gap = 0.20 if args.max_ce_gap is None else args.max_ce_gap
+    calib_pool_cap = args.calib_pool_blocks or default_calib_pool
+    train_pool_cap = args.train_pool_blocks or default_train_pool
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -271,20 +346,31 @@ def main():
         )
     print(f"Progressive schedule: {base.stage_schedule(args.num_shards)} | CE gate={max_ce_gap:.3f}", flush=True)
 
-    print("STAGE preparing FineWeb-Edu calibration/probe/train/eval blocks", flush=True)
+    print("STAGE preparing memory-safe FineWeb-Edu pools", flush=True)
     calib_needed = n_groups * len(base.stage_schedule(args.num_shards)) * steps_per_stage * args.batch_size
     train_needed = train_updates * grad_accum * args.batch_size
-    calib_batches = base.base.make_batches(
-        list(base.base.token_blocks(tokenizer, args.seed + 5, calib_needed, args.seq_len)), args.batch_size
+    calib_batches = make_safe_pool(
+        tokenizer, args.seed + 5, calib_needed, calib_pool_cap, args.seq_len,
+        args.batch_size, args.stream_shuffle_buffer, "calibration"
     )
-    probe_batches = base.base.make_batches(
-        list(base.base.token_blocks(tokenizer, args.seed + 777, probe_count * args.batch_size, args.seq_len)), args.batch_size
+    probe_batches = make_safe_pool(
+        tokenizer, args.seed + 777, probe_count * args.batch_size,
+        probe_count * args.batch_size, args.seq_len, args.batch_size,
+        args.stream_shuffle_buffer, "probe"
     )
-    train_batches = base.base.make_batches(
-        list(base.base.token_blocks(tokenizer, args.seed + 10, train_needed, args.seq_len)), args.batch_size
+    train_batches = make_safe_pool(
+        tokenizer, args.seed + 10, train_needed, train_pool_cap, args.seq_len,
+        args.batch_size, args.stream_shuffle_buffer, "training"
     )
-    eval_batches = base.base.make_batches(
-        list(base.base.token_blocks(tokenizer, args.seed + 999, eval_count * args.batch_size, args.seq_len)), args.batch_size
+    eval_batches = make_safe_pool(
+        tokenizer, args.seed + 999, eval_count * args.batch_size,
+        eval_count * args.batch_size, args.seq_len, args.batch_size,
+        args.stream_shuffle_buffer, "evaluation"
+    )
+    print(
+        f"DATA ready: calib={len(calib_batches)} batches, probe={len(probe_batches)}, "
+        f"train={len(train_batches)}, eval={len(eval_batches)}",
+        flush=True,
     )
 
     bio, bio_metrics, bio_calib, bio_hist, bio_state, bio_eq = train_variant(
@@ -368,6 +454,9 @@ def main():
             "quality_gate_max_ce_gap": max_ce_gap,
             "post_training_quality_rescue": bool(args.quality_rescue),
             "rescue_probe_batches": int(args.rescue_probe_batches),
+            "calib_pool_blocks": int(calib_pool_cap),
+            "train_pool_blocks": int(train_pool_cap),
+            "stream_shuffle_buffer": int(args.stream_shuffle_buffer),
             "stage_schedule": base.stage_schedule(args.num_shards),
             "steps_per_stage": steps_per_stage,
             "global_train_updates": train_updates,
