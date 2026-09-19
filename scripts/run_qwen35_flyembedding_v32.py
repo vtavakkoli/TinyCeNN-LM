@@ -13,12 +13,12 @@ import pandas as pd
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from tinycenn_lm.qwen35_flyembedding_v3 import (
+from tinycenn_lm.qwen35_flyembedding_v32 import (
     FlyEmbeddingV32Config,
     assert_fly_embedding_v32_identity,
-    assert_qwen35_fly_embedding_v322,
+    assert_qwen35_fly_embedding_v32,
     freeze_qwen_train_fly_v32,
-    install_fly_embedding_v322,
+    install_fly_embedding_v32,
 )
 
 BASE_MODEL = "Qwen/Qwen3.5-0.8B"
@@ -361,8 +361,8 @@ def main():
         gate_groups=args.gate_groups,
         gate_hidden=args.gate_hidden,
     )
-    install_fly_embedding_v322(student, cfg, make_adjacency(args.fly_nodes).to(device))
-    assert_qwen35_fly_embedding_v322(student)
+    install_fly_embedding_v32(student, cfg, make_adjacency(args.fly_nodes).to(device))
+    assert_qwen35_fly_embedding_v32(student)
     if student.lm_head is not original_lm_head:
         raise RuntimeError("Qwen lm_head changed")
     if student.model.embed_tokens.weight.data_ptr() != original_embedding.weight.data_ptr():
