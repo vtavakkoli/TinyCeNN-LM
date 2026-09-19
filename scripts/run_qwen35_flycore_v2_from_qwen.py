@@ -168,7 +168,17 @@ def train_embedding(student, teacher, train_batches, probe_batches, updates, dev
     opt = torch.optim.AdamW(groups, weight_decay=0.0)
     start = probe(student, teacher, probe_batches, device)
     best = dict(start)
-    best_score = max(start["ce_gap"], 0.0) + 0.20 * start["teacher_kl"] + 0.30 * start["embedding_relative_mse"]
+    def quality_score(m):
+        # Preservation experiment: staying close to Qwen matters more than
+        # shaving CE on the tiny calibration corpus.
+        return (
+            max(float(m["ce_gap"]), 0.0)
+            + 0.35 * float(m["teacher_kl"])
+            + 0.75 * float(m["embedding_relative_mse"])
+            + 0.35 * (1.0 - float(m["top1_logit_agreement"]))
+        )
+
+    best_score = quality_score(start)
     best_state = {k: v.detach().cpu().clone() for k, v in core.state_dict().items()}
     hist = []
     teacher.eval()
@@ -188,7 +198,9 @@ def train_embedding(student, teacher, train_batches, probe_batches, updates, dev
         kl = distill_kl(s.logits, t.logits)
         den = te.float().square().mean().clamp_min(1e-8)
         emb = (se.float() - te.float()).square().mean() / den
-        loss = 0.35 * ce + 0.30 * kl + 0.35 * emb
+        # Distillation/embedding preservation dominate. A large CE weight can
+        # overfit the small calibration text while moving away from Qwen.
+        loss = 0.05 * ce + 0.45 * kl + 0.50 * emb
         loss.backward()
         torch.nn.utils.clip_grad_norm_(trainable, 0.5)
         opt.step()
@@ -211,7 +223,7 @@ def train_embedding(student, teacher, train_batches, probe_batches, updates, dev
             )
         if step % 50 == 0 or step == updates:
             m = probe(student, teacher, probe_batches, device)
-            score = max(m["ce_gap"], 0.0) + 0.20 * m["teacher_kl"] + 0.30 * m["embedding_relative_mse"]
+            score = quality_score(m)
             print("PROBE", step, json.dumps(m), "score=", score, flush=True)
             if score < best_score:
                 best_score = score
@@ -224,12 +236,25 @@ def train_embedding(student, teacher, train_batches, probe_batches, updates, dev
 
 
 @torch.no_grad()
-def generation_sanity(model, tokenizer, device):
+def generation_sanity(model, tokenizer, device, teacher=None):
     prompts = [
         "Explain in two sentences why the sky is blue.",
         "What is 17 + 25? Give only the answer.",
         "Write one short sentence about Vienna.",
     ]
+
+    def generate(m, enc):
+        out = m.generate(
+            **enc,
+            max_new_tokens=80,
+            do_sample=False,
+            use_cache=True,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+        ids = out[0, enc.input_ids.shape[1]:]
+        txt = tokenizer.decode(ids, skip_special_tokens=True).strip()
+        return ids.tolist(), txt
+
     rows = []
     ok = True
     for prompt in prompts:
@@ -239,18 +264,30 @@ def generation_sanity(model, tokenizer, device):
             add_generation_prompt=True,
         )
         enc = tokenizer(text, return_tensors="pt").to(device)
-        out = model.generate(
-            **enc,
-            max_new_tokens=80,
-            do_sample=False,
-            use_cache=True,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-        ids = out[0, enc.input_ids.shape[1]:]
-        reply = tokenizer.decode(ids, skip_special_tokens=True).strip()
-        passed = bool(reply) and len(ids) > 1
+        student_ids, reply = generate(model, enc)
+
+        teacher_ids = []
+        teacher_reply = ""
+        token_jaccard = None
+        if teacher is not None:
+            teacher_ids, teacher_reply = generate(teacher, enc)
+            a, b = set(student_ids), set(teacher_ids)
+            token_jaccard = len(a & b) / max(len(a | b), 1)
+
+        bad_unicode = "�" in reply
+        length_ok = len(student_ids) >= 3 and len(reply) >= 2
+        overlap_ok = teacher is None or token_jaccard >= 0.20
+        passed = bool(reply) and length_ok and not bad_unicode and overlap_ok
         ok = ok and passed
-        rows.append({"prompt": prompt, "reply": reply, "tokens": int(len(ids)), "passed": passed})
+        rows.append({
+            "prompt": prompt,
+            "teacher_reply": teacher_reply,
+            "reply": reply,
+            "tokens": len(student_ids),
+            "teacher_tokens": len(teacher_ids),
+            "token_jaccard_vs_qwen": token_jaccard,
+            "passed": passed,
+        })
     return ok, rows
 
 
@@ -347,10 +384,19 @@ def main():
         raise RuntimeError("Qwen lm_head changed in input-only mode")
     print("✓ Qwen body unchanged; only input embedding replaced; original lm_head preserved", flush=True)
 
+    # Check the factorized initialization before training. This is useful
+    # because training is allowed to keep the initialization when it is best.
+    initial_sanity_ok, initial_sanity_rows = generation_sanity(
+        student, tokenizer, device, teacher=teacher
+    )
+    print("INITIAL GENERATION SANITY", json.dumps(initial_sanity_rows, indent=2), flush=True)
+
     final_probe, hist, initial_probe, best_probe = train_embedding(
         student, teacher, train_batches, probe_batches, updates, device
     )
-    sanity_ok, sanity_rows = generation_sanity(student, tokenizer, device)
+    sanity_ok, sanity_rows = generation_sanity(
+        student, tokenizer, device, teacher=teacher
+    )
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -374,6 +420,8 @@ def main():
         "initial_probe": initial_probe,
         "best_probe": best_probe,
         "final_probe": final_probe,
+        "initial_generation_sanity_passed": initial_sanity_ok,
+        "initial_generation_sanity": initial_sanity_rows,
         "generation_sanity_passed": sanity_ok,
         "generation_sanity": sanity_rows,
         "embedding_parameter_stats": student.fly_vocab_core_v2.parameter_stats(),
