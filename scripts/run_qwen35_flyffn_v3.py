@@ -24,6 +24,7 @@ from tinycenn_lm.qwen35_flyffn_v3 import (
     flyffn_v2_modules,
     replace_all_ffns_with_fly_v3,
     routing_schedule,
+    set_route_state,
 )
 from tinycenn_lm.qwen35_standalone import export_standalone, upload_standalone
 
@@ -49,6 +50,10 @@ def parse_args():
     p.add_argument("--graph-steps", type=int, default=1)
     p.add_argument("--graph-mix-init", type=float, default=0.50)
     p.add_argument("--max-ce-gap", type=float, default=None)
+    p.add_argument("--quality-rescue", action=argparse.BooleanOptionalAction, default=True,
+                   help="After global distillation, selectively relax sparse routing on sensitive layers until the CE gate is recovered.")
+    p.add_argument("--rescue-probe-batches", type=int, default=4,
+                   help="Number of held-out probe batches used by adaptive quality rescue.")
     p.add_argument("--rewired", action="store_true")
     p.add_argument("--output-dir", default="results/flyffn_v3_qwen35_08b")
     p.add_argument("--standalone-dir", default=None)
@@ -99,6 +104,84 @@ def generate_chat_samples(model, tokenizer, device, max_new_tokens=128):
         reply = tokenizer.decode(out[0, enc.input_ids.shape[1]:], skip_special_tokens=True).strip()
         rows.append({"prompt": prompt, "reply": reply})
     return rows
+
+
+@torch.no_grad()
+def adaptive_quality_rescue(student, teacher, probe_batches, args, device, dtype, max_ce_gap):
+    """Recover the CE quality gate with the smallest useful loss of sparsity.
+
+    Global distillation can move a model away from the progressive calibration
+    gate.  We therefore test one extra shard at a time on the most aggressively
+    sparse layers, keep only changes that improve held-out CE, and stop as soon
+    as the requested quality gap is recovered.
+    """
+    batches = probe_batches[:max(1, min(len(probe_batches), int(args.rescue_probe_batches)))]
+
+    def score():
+        m = base.evaluate(student, teacher, batches, device, dtype, args.seq_len, args.batch_size)
+        return m, float(m["ce"] - m["teacher_ce"])
+
+    metrics, gap = score()
+    history = [{
+        "step": 0, "layer": None, "old_k": None, "new_k": None,
+        "ce_gap": gap, "accepted": True, "reason": "initial",
+    }]
+    if gap <= max_ce_gap:
+        print(f"RESCUE not needed: held-out CE gap={gap:.4f} <= {max_ce_gap:.4f}", flush=True)
+        return metrics, history
+
+    print(f"RESCUE start: held-out CE gap={gap:.4f} > {max_ce_gap:.4f}", flush=True)
+    step = 0
+    while gap > max_ce_gap:
+        candidates = [
+            m for m in flyffn_v2_modules(student)
+            if m.route_mix > 0.0 and m.active_k < m.num_shards
+        ]
+        candidates.sort(
+            key=lambda m: (m.route_mix * (m.num_shards - m.active_k), -m.layer_idx),
+            reverse=True,
+        )
+        if not candidates:
+            break
+
+        best = None
+        for m in candidates:
+            old_k = m.active_k
+            m.set_route_state(old_k + 1, m.route_mix)
+            cand_metrics, cand_gap = score()
+            m.set_route_state(old_k, m.route_mix)
+            improvement = gap - cand_gap
+            if best is None or improvement > best["improvement"]:
+                best = {
+                    "module": m, "old_k": old_k, "new_k": old_k + 1,
+                    "metrics": cand_metrics, "gap": cand_gap, "improvement": improvement,
+                }
+
+        if best is None or best["improvement"] <= 1e-4:
+            print("RESCUE stopped: no single-layer k increase improved held-out CE.", flush=True)
+            break
+
+        m = best["module"]
+        m.set_route_state(best["new_k"], m.route_mix)
+        metrics, gap = best["metrics"], best["gap"]
+        step += 1
+        history.append({
+            "step": step, "layer": int(m.layer_idx),
+            "old_k": int(best["old_k"]), "new_k": int(best["new_k"]),
+            "ce_gap": gap, "accepted": True, "reason": "best_single_layer_backoff",
+        })
+        print(
+            f"RESCUE step={step} layer={m.layer_idx} k={best['old_k']}→{best['new_k']} "
+            f"improvement={best['improvement']:.4f} held-out-gap={gap:.4f}",
+            flush=True,
+        )
+
+    print(
+        f"RESCUE final: held-out CE gap={gap:.4f} | "
+        f"{'PASS' if gap <= max_ce_gap else 'BEST_EFFORT'}",
+        flush=True,
+    )
+    return metrics, history
 
 
 def train_variant(name, adjacency, teacher, tokenizer, cfg, calib_batches, probe_batches,
@@ -235,6 +318,22 @@ def main():
         base.load_v2_state(bio, bio_state)
 
     assert_qwen35_flyffn_v3(bio)
+
+    rescue_history = []
+    rescue_probe_metrics = None
+    if args.quality_rescue:
+        print("STAGE post-training adaptive quality rescue", flush=True)
+        rescue_probe_metrics, rescue_history = adaptive_quality_rescue(
+            bio, teacher, probe_batches, args, device, dtype, max_ce_gap
+        )
+        pd.DataFrame(rescue_history).to_csv(out_dir / "bio_quality_rescue.csv", index=False)
+        # Re-evaluate on the untouched eval split after the rescue decision.
+        bio_metrics = base.evaluate(
+            bio, teacher, eval_batches, device, dtype, args.seq_len, args.batch_size
+        )
+        bio_state = base.v2_state(bio)
+
+    bio_schedule = routing_schedule(bio)
     test_ids = eval_batches[0][:, :-1].to(device)
     print("STAGE benchmarking Qwen3.5-0.8B vs FlyFFN-v3", flush=True)
     tbench = base.base.benchmark(teacher, test_ids, device)
@@ -252,7 +351,7 @@ def main():
         "qwen_layer_types": layer_types,
         "dense_equivalence_biological_max_abs_logit_diff": bio_eq,
         "dense_equivalence_rewired_max_abs_logit_diff": rew_eq,
-        "implementation_note": "v3.1 uses exact dense reconstruction during blending and selected-shard execution at full sparsity",
+        "implementation_note": "v3.2 adds post-training adaptive quality rescue on top of exact dense reconstruction, confidence-tempered routing, and selected-shard sparse execution",
         "device": str(device),
         "dtype": str(dtype),
         "config": {
@@ -267,12 +366,16 @@ def main():
             "replace_all_ffns": True,
             "dense_anchors": 0,
             "quality_gate_max_ce_gap": max_ce_gap,
+            "post_training_quality_rescue": bool(args.quality_rescue),
+            "rescue_probe_batches": int(args.rescue_probe_batches),
             "stage_schedule": base.stage_schedule(args.num_shards),
             "steps_per_stage": steps_per_stage,
             "global_train_updates": train_updates,
             "grad_accum": grad_accum,
         },
         "biological": bio_metrics,
+        "post_training_rescue_probe": rescue_probe_metrics,
+        "quality_rescue_history": rescue_history,
         "rewired": rewired_metrics,
         "biological_routing_schedule": bio_schedule,
         "rewired_routing_schedule": rew_schedule,
