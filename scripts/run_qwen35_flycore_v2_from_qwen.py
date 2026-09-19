@@ -100,10 +100,20 @@ def token_blocks(tokenizer, seed: int, count: int, seq_len: int):
         yield ids[: seq_len + 1].unsqueeze(0)
 
 
-def causal_ce(logits, ids):
+def causal_ce(logits, target_ids):
+    """Cross-entropy when logits predict target_ids position-by-position.
+
+    The caller feeds x = ids[:, :-1] to the model and passes
+    target_ids = ids[:, 1:], so no additional shift is performed here.
+    """
+    if logits.shape[1] != target_ids.shape[1]:
+        raise ValueError(
+            f"causal_ce length mismatch: logits={logits.shape[1]} "
+            f"targets={target_ids.shape[1]}"
+        )
     return torch.nn.functional.cross_entropy(
-        logits[:, :-1].float().reshape(-1, logits.shape[-1]),
-        ids[:, 1:].reshape(-1),
+        logits.float().reshape(-1, logits.shape[-1]),
+        target_ids.reshape(-1),
     )
 
 
@@ -126,8 +136,8 @@ def probe(student, teacher, batches, device):
         s = student(input_ids=x, use_cache=False, return_dict=True)
         te = teacher.model.embed_tokens(x)
         se = student.model.embed_tokens(x)
-        tce += float(causal_ce(t.logits, ids))
-        sce += float(causal_ce(s.logits, ids))
+        tce += float(causal_ce(t.logits, ids[:, 1:]))
+        sce += float(causal_ce(s.logits, ids[:, 1:]))
         kl += float(distill_kl(s.logits, t.logits))
         den = te.float().square().mean().clamp_min(1e-8)
         emb += float(((se.float() - te.float()).square().mean() / den).item())
@@ -174,7 +184,7 @@ def train_embedding(student, teacher, train_batches, probe_batches, updates, dev
             te = teacher.model.embed_tokens(x)
         s = student(input_ids=x, use_cache=False, return_dict=True)
         se = student.model.embed_tokens(x)
-        ce = causal_ce(s.logits, ids)
+        ce = causal_ce(s.logits, ids[:, 1:])
         kl = distill_kl(s.logits, t.logits)
         den = te.float().square().mean().clamp_min(1e-8)
         emb = (se.float() - te.float()).square().mean() / den
