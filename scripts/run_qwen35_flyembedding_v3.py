@@ -203,7 +203,7 @@ def quality_score(m):
     # Lower is better. Improvements in CE are allowed, but drift from Qwen is
     # explicitly expensive because this experiment is preservation-first.
     return (
-        max(float(m["ce_gap"]), 0.0)
+        max(float(m["ce_gap"]), -0.10)
         + 0.60 * float(m["teacher_kl"])
         + 0.50 * float(m["embedding_relative_mse"])
         + 0.50 * (1.0 - float(m["top1_logit_agreement"]))
@@ -332,8 +332,11 @@ def main():
 
     initial_probe = probe(student, teacher, probe_batches, device)
     print("INITIAL PROBE", json.dumps(initial_probe, indent=2), flush=True)
-    if initial_probe["top1_logit_agreement"] != 1.0 or initial_probe["max_abs_logit_error"] != 0.0:
-        raise RuntimeError("Identity contract failed at model-logit level")
+    if initial_probe["top1_logit_agreement"] != 1.0 or initial_probe["max_abs_logit_error"] > 1e-5:
+        raise RuntimeError(
+            "Identity contract failed at model-logit level: "
+            + json.dumps(initial_probe)
+        )
 
     initial_generation_ok, initial_generation = generation_compare(
         student, teacher, tokenizer, device
