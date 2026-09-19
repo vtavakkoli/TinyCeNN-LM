@@ -57,7 +57,9 @@ def parse_args():
 
 def stage_schedule(num_shards: int):
     if num_shards == 8:
-        return [(6, 0.10), (4, 0.25), (4, 0.50), (3, 0.70), (2, 1.00)]
+        # Gentler sparsification gives the router time to specialize before the
+        # high-compression stages.  The old schedule jumped 6 -> 4 too early.
+        return [(7, 0.08), (6, 0.18), (5, 0.32), (4, 0.50), (3, 0.70), (2, 1.00)]
     ks = sorted(set(max(1, round(num_shards * f)) for f in (0.75, 0.50, 0.375, 0.25)), reverse=True)
     return list(zip(ks, np.linspace(0.15, 1.0, len(ks)).tolist()))
 
@@ -125,7 +127,7 @@ def calibrate_progressively(name, student, teacher, calib_batches, probe_batches
             before = snapshot_group(student, layer_group)
             set_route_state(student, layer_group, active_k=k, route_mix=mix)
             param_groups, trainable = flyffn_v2_parameter_groups(
-                student, layer_group, router_lr=7e-4, shard_lr=1e-5, weight_decay=0.0
+                student, layer_group, router_lr=5e-4, shard_lr=2e-5, weight_decay=0.0
             )
             opt = base.make_optimizer(param_groups, device)
             scaler = base.make_scaler(device, dtype)
@@ -197,7 +199,7 @@ def global_train(name, student, teacher, train_batches, eval_batches, args, devi
     if not layers:
         print(f"GLOBAL {name}: no groups passed quality gate; exact dense fallback retained",flush=True)
         return evaluate(student,teacher,eval_batches,device,dtype,args.seq_len,args.batch_size), []
-    groups, trainable=flyffn_v2_parameter_groups(student,layers,router_lr=5e-4,shard_lr=8e-6,weight_decay=.01)
+    groups, trainable=flyffn_v2_parameter_groups(student,layers,router_lr=3e-4,shard_lr=1.5e-5,weight_decay=.01)
     opt=base.make_optimizer(groups,device); scaler=base.make_scaler(device,dtype)
     warmup=max(20,train_updates//20); history=[]; micro=0; t0=time.perf_counter(); opt.zero_grad(set_to_none=True)
     student.train()
@@ -212,7 +214,10 @@ def global_train(name, student, teacher, train_batches, eval_batches, args, devi
                 ce=base.causal_ce(s.logits,ids); kl=base.distill_kl(s.logits,t.logits)
                 hid=base.hidden_alignment(s.hidden_states,t.hidden_states)
                 reg=flyffn_v2_router_regularizer(student,layers)
-                raw=.35*ce+.45*kl+.20*hid+.005*reg; loss=raw/grad_accum
+                # Put more weight on token likelihood while retaining strong
+                # teacher-logit guidance. Hidden-state matching remains a
+                # stabilizer rather than dominating the objective.
+                raw=.45*ce+.45*kl+.10*hid+.005*reg; loss=raw/grad_accum
             scaler.scale(loss).backward()
             ce_a+=float(ce.detach())/grad_accum; kl_a+=float(kl.detach())/grad_accum
             hid_a+=float(hid.detach())/grad_accum; reg_a+=float(reg.detach())/grad_accum
@@ -223,7 +228,7 @@ def global_train(name, student, teacher, train_batches, eval_batches, args, devi
         else:
             p=(update-warmup)/max(train_updates-warmup,1)
             mult=.10+.90*.5*(1+math.cos(math.pi*min(p,1.0)))
-        opt.param_groups[0]["lr"]=5e-4*mult; opt.param_groups[1]["lr"]=8e-6*mult
+        opt.param_groups[0]["lr"]=3e-4*mult; opt.param_groups[1]["lr"]=1.5e-5*mult
         scaler.step(opt); scaler.update(); opt.zero_grad(set_to_none=True)
         history.append({"update":update,"loss":loss_a,"ce":ce_a,"kl":kl_a,"hidden":hid_a,"router_reg":reg_a})
         if update==1 or update%25==0 or update==train_updates:
