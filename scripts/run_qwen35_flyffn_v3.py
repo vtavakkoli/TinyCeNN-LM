@@ -133,13 +133,15 @@ def main():
     )
 
     if args.run_mode == "quick":
-        steps_per_stage, group_size = 3, 3
-        train_updates, grad_accum, eval_count, probe_count = 400, 1, 10, 3
-        max_ce_gap = 0.30 if args.max_ce_gap is None else args.max_ce_gap
+        steps_per_stage, group_size = 4, 2
+        train_updates, grad_accum, eval_count, probe_count = 600, 1, 12, 4
+        max_ce_gap = 0.25 if args.max_ce_gap is None else args.max_ce_gap
     else:
-        steps_per_stage, group_size = 12, 3
-        train_updates, grad_accum, eval_count, probe_count = 3000, 2, 20, 6
-        max_ce_gap = 0.22 if args.max_ce_gap is None else args.max_ce_gap
+        # Layer-wise quality gating prevents one difficult layer from forcing
+        # two neighboring layers to roll back with it.
+        steps_per_stage, group_size = 8, 1
+        train_updates, grad_accum, eval_count, probe_count = 4000, 2, 24, 8
+        max_ce_gap = 0.20 if args.max_ce_gap is None else args.max_ce_gap
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -250,7 +252,7 @@ def main():
         "qwen_layer_types": layer_types,
         "dense_equivalence_biological_max_abs_logit_diff": bio_eq,
         "dense_equivalence_rewired_max_abs_logit_diff": rew_eq,
-        "implementation_note": "quality prototype computes all shards during dense/sparse blend; fused selected-shard dispatch is a later speed optimization",
+        "implementation_note": "v3.1 uses exact dense reconstruction during blending and selected-shard execution at full sparsity",
         "device": str(device),
         "dtype": str(dtype),
         "config": {
