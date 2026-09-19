@@ -110,8 +110,8 @@ def load_real_blocks(tokenizer, run_mode, seq_len, seed):
     source = "synthetic-fallback"
     try:
         from datasets import load_dataset
-        ds_train = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
-        ds_val = load_dataset("wikitext", "wikitext-2-raw-v1", split="validation")
+        ds_train = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="train")
+        ds_val = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="validation")
         train_text = [x["text"] for x in ds_train if x.get("text", "").strip()]
         val_text = [x["text"] for x in ds_val if x.get("text", "").strip()]
         train = blocks_from_texts(tokenizer, train_text, train_n, seq_len, seed + 10)
