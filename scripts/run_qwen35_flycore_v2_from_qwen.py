@@ -280,7 +280,21 @@ def main():
         tokenize=True,
         add_generation_prompt=False,
     )
-    special_ids.update(int(x) for x in chat_probe if int(x) >= int(teacher.config.vocab_size) - 512)
+    # Transformers versions differ here: this may be a plain list/tensor of
+    # token ids or a BatchEncoding/dict containing "input_ids".
+    if hasattr(chat_probe, "input_ids"):
+        chat_probe = chat_probe.input_ids
+    elif isinstance(chat_probe, dict):
+        chat_probe = chat_probe["input_ids"]
+    if isinstance(chat_probe, torch.Tensor):
+        chat_probe = chat_probe.detach().cpu().reshape(-1).tolist()
+    elif chat_probe and isinstance(chat_probe[0], (list, tuple)):
+        chat_probe = chat_probe[0]
+    chat_probe = [int(x) for x in chat_probe]
+    special_ids.update(
+        x for x in chat_probe
+        if x >= int(teacher.config.vocab_size) - 512
+    )
     special_ids = sorted(special_ids)
     print("Protected special/chat-control token ids:", special_ids, flush=True)
     hot_ids = choose_hot_tokens(
