@@ -309,18 +309,39 @@ def reset_stream_state_v2(model: nn.Module) -> None:
             m.reset_stream_state()
 
 
-def direct_mixer_loss_v2(model: nn.Module) -> Tensor:
-    losses = []
+def direct_mixer_losses_v2(model: nn.Module) -> dict[str, Tensor]:
+    """Directly compare CeNN with the frozen Qwen mixer at the replacement site."""
+    mses, cosines, deltas = [], [], []
     for m in iter_progressive_wrappers(model):
         if m.last_original is None or m.last_cenn is None:
             continue
         t = m.last_original.float()
         s = m.last_cenn.float()
         den = t.square().mean().clamp_min(1e-12)
-        losses.append((s - t).square().mean() / den)
-    if not losses:
+        mses.append((s - t).square().mean() / den)
+
+        # Direction matters for downstream normalization/residual processing.
+        sf = s.reshape(-1, s.shape[-1])
+        tf = t.reshape(-1, t.shape[-1])
+        cosines.append((1.0 - F.cosine_similarity(sf, tf, dim=-1, eps=1e-6)).mean())
+
+        # Match temporal dynamics, not only absolute output vectors.
+        if s.shape[1] > 1:
+            sd = s[:, 1:] - s[:, :-1]
+            td = t[:, 1:] - t[:, :-1]
+            dden = td.square().mean().clamp_min(1e-12)
+            deltas.append((sd - td).square().mean() / dden)
+
+    if not mses:
         raise RuntimeError("No progressive CeNN wrapper outputs available for mixer loss")
-    return torch.stack(losses).mean()
+    z = torch.stack(mses).mean()
+    c = torch.stack(cosines).mean()
+    d = torch.stack(deltas).mean() if deltas else z.new_zeros(())
+    return {"mse": z, "cosine": c, "delta": d}
+
+
+def direct_mixer_loss_v2(model: nn.Module) -> Tensor:
+    return direct_mixer_losses_v2(model)["mse"]
 
 
 def freeze_all_except_cenn_v2(model: nn.Module) -> list[Tensor]:
@@ -379,6 +400,7 @@ __all__ = [
     "iter_progressive_wrappers",
     "set_alpha_v2",
     "reset_stream_state_v2",
+    "direct_mixer_losses_v2",
     "direct_mixer_loss_v2",
     "freeze_all_except_cenn_v2",
     "clone_cenn_state_v2",
