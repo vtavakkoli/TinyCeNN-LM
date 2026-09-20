@@ -133,12 +133,14 @@ def topk_rank_loss(student_logits, teacher_logits, k=64):
     """Preserve teacher's most competitive next-token ordering and margins."""
     k = min(int(k), int(teacher_logits.shape[-1]))
     with torch.no_grad():
-        idx = teacher_logits.float().topk(k, dim=-1).indices
-        t = teacher_logits.float().gather(-1, idx)
+        # Take top-k before casting the whole vocabulary tensor to fp32 to keep
+        # memory use modest on Colab GPUs.
+        idx = teacher_logits.topk(k, dim=-1).indices
+        t = teacher_logits.gather(-1, idx).float()
         t = t - t.mean(dim=-1, keepdim=True)
         scale = t.std(dim=-1, keepdim=True).clamp_min(0.25)
         t = t / scale
-    s = student_logits.float().gather(-1, idx)
+    s = student_logits.gather(-1, idx).float()
     s = s - s.mean(dim=-1, keepdim=True)
     s = s / scale
     return F.smooth_l1_loss(s, t)
