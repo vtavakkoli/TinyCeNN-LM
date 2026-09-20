@@ -36,7 +36,11 @@ def parse_args():
     p.add_argument("--graph-mix", type=float, default=0.05)
     p.add_argument("--max-fly-scale", type=float, default=0.05)
     p.add_argument("--lr", type=float, default=2e-4)
-    p.add_argument("--stage-updates", type=int, default=60)
+    p.add_argument("--stage-updates", type=int, default=100)
+    p.add_argument("--probe-every", type=int, default=20)
+    p.add_argument("--extend-updates", type=int, default=100)
+    p.add_argument("--max-stage-updates", type=int, default=1200)
+    p.add_argument("--patience-probes", type=int, default=12)
     p.add_argument("--min-top1", type=float, default=0.97)
     p.add_argument("--max-kl", type=float, default=0.03)
     p.add_argument("--max-ce-gap", type=float, default=0.08)
@@ -188,6 +192,31 @@ def stage_ok(m,args):
     )
 
 
+
+def stage_violation_score(m,args):
+    """Lower is better; zero means all preservation constraints are satisfied."""
+    top1_v=max(args.min_top1-float(m["top1_logit_agreement"]),0.0)/max(1.0-args.min_top1,1e-6)
+    kl_v=max(float(m["teacher_kl"])-args.max_kl,0.0)/max(args.max_kl,1e-8)
+    ce_v=max(float(m["ce_gap"])-args.max_ce_gap,0.0)/max(args.max_ce_gap,1e-8)
+    return top1_v + kl_v + ce_v
+
+
+def stage_quality_key(m,args):
+    """Lexicographic key: satisfy constraints first, then preserve Qwen, then improve CE."""
+    safe=stage_ok(m,args)
+    return (
+        0 if safe else 1,
+        stage_violation_score(m,args),
+        float(m["teacher_kl"]),
+        1.0-float(m["top1_logit_agreement"]),
+        float(m["student_ce"]),
+    )
+
+
+def clone_core_state(core):
+    return {k:v.detach().cpu().clone() for k,v in core.state_dict().items()}
+
+
 def main():
     args=parse_args(); set_seed(args.seed)
     device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -216,54 +245,159 @@ def main():
     )
     install_fly_embedding_v33(student,cfg,fac)
     trainable=freeze_qwen_train_compact_v33(student)
-    opt=torch.optim.AdamW(trainable,lr=args.lr,weight_decay=0.0)
 
     train,val,data_source=load_blocks(tokenizer,args.run_mode,args.seq_len,args.seed)
     betas=[0.0,0.05,0.10,0.20,0.35,0.50,0.70,0.85,1.0]
-    updates=args.stage_updates if args.run_mode=="quick" else args.stage_updates*3
+    base_updates=args.stage_updates if args.run_mode=="quick" else args.stage_updates*2
+    max_stage_updates=args.max_stage_updates if args.run_mode=="quick" else args.max_stage_updates*2
     hist=[]; stages=[]; global_step=0
     best_safe_beta=0.0; best_safe_state=None
+    out=Path(args.output_dir); out.mkdir(parents=True,exist_ok=True)
+
+    # This state is what the next beta inherits. It is always the BEST validation
+    # checkpoint from the preceding beta, never simply the last training step.
+    previous_stage_best=clone_core_state(student.fly_embedding_v33_core)
 
     for beta in betas:
+        student.fly_embedding_v33_core.load_state_dict(previous_stage_best,strict=True)
         set_progressive_beta_v33(student,beta)
         print("\n=== BETA",beta,"===",flush=True)
 
-        if beta > 0:
-            for j in range(updates):
+        # Fresh optimizer per beta: do not carry Adam momentum from a worse stage.
+        trainable=freeze_qwen_train_compact_v33(student)
+        opt=torch.optim.AdamW(trainable,lr=args.lr,weight_decay=0.0)
+
+        initial_m=probe(student,teacher,val,device)
+        stage_best_m=dict(initial_m)
+        stage_best_state=clone_core_state(student.fly_embedding_v33_core)
+        stage_best_key=stage_quality_key(initial_m,args)
+        stage_best_step=0
+        probes_without_improvement=0
+        stage_steps=0
+        target_budget=0 if beta==0.0 else base_updates
+
+        print("STAGE INITIAL",json.dumps({"beta":beta,**initial_m,"safe":stage_ok(initial_m,args)}),flush=True)
+
+        while beta>0.0 and stage_steps < max_stage_updates:
+            # Train at least the current target budget. If quality is still out
+            # of bounds afterwards, automatically extend by extend_updates.
+            while stage_steps < min(target_budget,max_stage_updates):
                 global_step += 1
+                stage_steps += 1
                 ids=train[(global_step-1)%len(train)].to(device)
                 x=ids[:,:-1]; y=ids[:,1:]
                 opt.zero_grad(set_to_none=True)
                 with torch.no_grad():
                     t=teacher(input_ids=x,use_cache=False,return_dict=True)
                     te=teacher.model.embed_tokens(x)
-                s=student(input_ids=x,use_cache=False,return_dict=True)
+                st=student(input_ids=x,use_cache=False,return_dict=True)
                 se=student.model.embed_tokens(x)
-                ce=causal_ce(s.logits,y)
-                kl=distill_kl(s.logits,t.logits)
+                ce=causal_ce(st.logits,y)
+                kl=distill_kl(st.logits,t.logits)
                 den=te.float().square().mean().clamp_min(1e-12)
                 em=(se.float()-te.float()).square().mean()/den
-                # As beta grows, preservation terms dominate.
                 loss=0.15*ce + 0.55*kl + 0.30*em
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(trainable,0.5)
                 opt.step()
-                if j==0 or (j+1)%20==0 or j+1==updates:
-                    hist.append({
-                        "global_step":global_step,"beta":beta,"stage_step":j+1,
+
+                if stage_steps==1 or stage_steps%args.probe_every==0 or stage_steps==target_budget:
+                    train_row={
+                        "global_step":global_step,"beta":beta,"stage_step":stage_steps,
                         "loss":float(loss.detach()),"ce":float(ce.detach()),
                         "kl":float(kl.detach()),"embedding_mse":float(em.detach()),
                         "fly_scale":float(student.fly_embedding_v33_core.fly_scale.detach()),
-                    })
-                    print(f"beta={beta:.2f} step={j+1}/{updates} loss={float(loss):.4f} ce={float(ce):.4f} kl={float(kl):.4f} emb={float(em):.4f}",flush=True)
+                    }
+                    hist.append(train_row)
+                    print(
+                        f"beta={beta:.2f} step={stage_steps}/{target_budget} "
+                        f"loss={train_row['loss']:.4f} ce={train_row['ce']:.4f} "
+                        f"kl={train_row['kl']:.4f} emb={train_row['embedding_mse']:.4f}",
+                        flush=True
+                    )
 
-        m=probe(student,teacher,val,device)
-        ok=stage_ok(m,args)
-        stages.append({"beta":beta,**m,"safe":ok})
-        print("STAGE",json.dumps(stages[-1]),flush=True)
+                    vm=probe(student,teacher,val,device)
+                    key=stage_quality_key(vm,args)
+                    improved=key < stage_best_key
+                    if improved:
+                        stage_best_key=key
+                        stage_best_m=dict(vm)
+                        stage_best_state=clone_core_state(student.fly_embedding_v33_core)
+                        stage_best_step=stage_steps
+                        probes_without_improvement=0
+                        torch.save(
+                            {"core":stage_best_state,"config":cfg.to_dict(),"base_model":args.base_model,
+                             "beta":beta,"stage_step":stage_best_step,"metrics":stage_best_m},
+                            out/f"fly_v33_beta_{str(beta).replace('.','p')}_best.pt"
+                        )
+                        print("  ✓ NEW STAGE BEST",json.dumps({
+                            "step":stage_best_step,
+                            "safe":stage_ok(stage_best_m,args),
+                            "violation_score":stage_violation_score(stage_best_m,args),
+                            **stage_best_m,
+                        }),flush=True)
+                    else:
+                        probes_without_improvement += 1
+
+                    # Once the target constraints are met, retain the best safe
+                    # checkpoint and stop this beta stage.
+                    if stage_ok(stage_best_m,args):
+                        print(f"  ✓ BETA {beta:.2f} fulfilled target at best step {stage_best_step}",flush=True)
+                        break
+
+            if stage_ok(stage_best_m,args):
+                break
+
+            if stage_steps >= max_stage_updates:
+                print(
+                    f"  ! BETA {beta:.2f} reached max-stage-updates={max_stage_updates}; "
+                    f"restoring best step {stage_best_step}",
+                    flush=True
+                )
+                break
+
+            # Extend training when teacher/student gap is still too high.
+            old_budget=target_budget
+            target_budget=min(target_budget+args.extend_updates,max_stage_updates)
+            print(
+                f"  ↻ gap not fulfilled at beta={beta:.2f}; extending training "
+                f"{old_budget} -> {target_budget} updates. "
+                f"best violation={stage_violation_score(stage_best_m,args):.4f}",
+                flush=True
+            )
+
+            # If many validation probes do not improve, lower LR before continuing
+            # rather than blindly stepping with the same learning rate.
+            if probes_without_improvement >= args.patience_probes:
+                for group in opt.param_groups:
+                    group["lr"] *= 0.5
+                print(
+                    f"  ↘ plateau detected; reducing LR to {opt.param_groups[0]['lr']:.3e}",
+                    flush=True
+                )
+                probes_without_improvement=0
+
+        # CRITICAL: use best weights found at this beta for the next beta.
+        student.fly_embedding_v33_core.load_state_dict(stage_best_state,strict=True)
+        previous_stage_best=clone_core_state(student.fly_embedding_v33_core)
+        set_progressive_beta_v33(student,beta)
+        restored_m=probe(student,teacher,val,device)
+        ok=stage_ok(restored_m,args)
+        stage_row={
+            "beta":beta,
+            "initial_student_ce":initial_m["student_ce"],
+            "best_step":stage_best_step,
+            "trained_steps":stage_steps,
+            **restored_m,
+            "safe":ok,
+            "violation_score":stage_violation_score(restored_m,args),
+        }
+        stages.append(stage_row)
+        print("STAGE RESTORED BEST",json.dumps(stage_row),flush=True)
+
         if ok:
             best_safe_beta=beta
-            best_safe_state={k:v.detach().cpu().clone() for k,v in student.fly_embedding_v33_core.state_dict().items()}
+            best_safe_state=clone_core_state(student.fly_embedding_v33_core)
 
     # Always inspect the fully compact beta=1 candidate.
     set_progressive_beta_v33(student,1.0)
@@ -272,7 +406,6 @@ def main():
     beta1_quality=stage_ok(final_beta1_probe,args) and sum(x["valid"] for x in final_gen)==len(final_gen)
 
     # Save beta=1 compact candidate before optional safe rollback.
-    out=Path(args.output_dir); out.mkdir(parents=True,exist_ok=True)
     beta1_state={k:v.detach().cpu() for k,v in student.fly_embedding_v33_core.state_dict().items()}
     torch.save({"core":beta1_state,"config":cfg.to_dict(),"base_model":args.base_model,"beta":1.0},out/"fly_v33_beta1_compact.pt")
 
@@ -297,6 +430,7 @@ def main():
         "data_source":data_source,
         "factorization":fac_stats,
         "schedule":betas,
+        "adaptive_stage_training":{"base_updates":base_updates,"extend_updates":args.extend_updates,"max_stage_updates":max_stage_updates,"probe_every":args.probe_every,"patience_probes":args.patience_probes},
         "best_safe_beta":best_safe_beta,
         "beta1_probe":final_beta1_probe,
         "beta1_quality_gate_passed":beta1_quality,
