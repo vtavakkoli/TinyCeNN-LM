@@ -56,6 +56,7 @@ def parse_args():
     p.add_argument("--max-mixer-mse", type=float, default=0.12)
 
     p.add_argument("--output-dir", default="results/cennmixer_v2_qwen35_08b")
+    p.add_argument("--quick-smoke", action="store_true", help="Fast smoke test with reduced data/steps while preserving v2 logic")
     p.add_argument("--seed", type=int, default=8621)
     return p.parse_args()
 
@@ -315,6 +316,29 @@ def generation_suite(student, teacher, tokenizer, device):
 
 def main():
     a = parse_args()
+    if a.quick_smoke:
+        # Fast sanity-check defaults. User-supplied values are intentionally
+        # overridden so the mode stays genuinely quick and reproducible.
+        a.alphas = "0,0.25,0.50,1.0"
+        a.seq_len = 64
+        a.train_blocks = 128
+        a.val_blocks = 8
+        a.stage_updates = 60
+        a.extend_updates = 40
+        a.max_stage_updates = 200
+        a.probe_every = 20
+        a.patience_probes = 4
+        a.topk = 32
+        print("QUICK_SMOKE enabled:", {
+            "alphas": a.alphas,
+            "seq_len": a.seq_len,
+            "train_blocks": a.train_blocks,
+            "val_blocks": a.val_blocks,
+            "stage_updates": a.stage_updates,
+            "max_stage_updates": a.max_stage_updates,
+            "probe_every": a.probe_every,
+            "topk": a.topk,
+        }, flush=True)
     set_seed(a.seed)
 
     layers = [int(x) for x in a.layers.split(",") if x.strip()]
