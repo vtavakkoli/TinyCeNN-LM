@@ -319,16 +319,16 @@ def main():
     if a.quick_smoke:
         # Fast sanity-check defaults. User-supplied values are intentionally
         # overridden so the mode stays genuinely quick and reproducible.
-        a.alphas = "0,0.25,0.50,1.0"
-        a.seq_len = 64
-        a.train_blocks = 128
-        a.val_blocks = 8
-        a.stage_updates = 60
-        a.extend_updates = 40
-        a.max_stage_updates = 200
+        a.alphas = "0,0.50,1.0"
+        a.seq_len = 32
+        a.train_blocks = 64
+        a.val_blocks = 4
+        a.stage_updates = 40
+        a.extend_updates = 30
+        a.max_stage_updates = 120
         a.probe_every = 20
         a.patience_probes = 4
-        a.topk = 32
+        a.topk = 16
         print("QUICK_SMOKE enabled:", {
             "alphas": a.alphas,
             "seq_len": a.seq_len,
