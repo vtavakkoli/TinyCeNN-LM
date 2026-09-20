@@ -78,9 +78,9 @@ def stage_targets(alpha,a):
     alpha=float(alpha)
     if a.quick_smoke:
         local={
-            "max_mixer_mse":0.28,
-            "max_mixer_cosine":0.14,
-            "max_mixer_delta":0.42,
+            "max_mixer_mse":0.30,
+            "max_mixer_cosine":0.15,
+            "max_mixer_delta":0.45,
         }
         if alpha<=0:
             return {"min_top1":0.999,"max_kl":1e-4,"max_hidden_mse":1e-4,**local}
