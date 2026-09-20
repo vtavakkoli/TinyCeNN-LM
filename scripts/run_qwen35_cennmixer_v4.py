@@ -60,6 +60,7 @@ def parse_args():
 
     p.add_argument("--quick-smoke",action="store_true")
     p.add_argument("--explore-high-alpha",action="store_true", help="Continue through soft smoke-gate misses while generation remains meaningful")
+    p.add_argument("--resume-alpha",type=float,default=None, help="Load the saved best checkpoint at this alpha and continue with higher alphas")
     p.add_argument("--output-dir",default="results/cennmixer_v4_qwen35_08b")
     p.add_argument("--seed",type=int,default=8621)
     return p.parse_args()
@@ -154,8 +155,32 @@ def main():
 
     history=[]; stages=[]; global_step=0
     previous_best=clone_cenn_state_v4(student)
+    run_alphas=list(alphas)
 
-    for alpha in alphas:
+    if a.resume_alpha is not None:
+        tag=str(float(a.resume_alpha)).replace(".","p")
+        ck_path=out/f"cennmixer_v4_alpha_{tag}_best.pt"
+        if not ck_path.exists():
+            raise FileNotFoundError(
+                f"Resume checkpoint not found: {ck_path}. "
+                "Use the same Colab runtime/output directory or rerun from alpha=0."
+            )
+        ck=torch.load(ck_path,map_location="cpu")
+        load_cenn_state_v4(student,ck["state"])
+        previous_best=clone_cenn_state_v4(student)
+        run_alphas=[x for x in alphas if x>float(a.resume_alpha)+1e-12]
+        print(
+            "RESUME:",
+            "loaded",ck_path,
+            "best step",ck.get("stage_step"),
+            "metrics",json.dumps(ck.get("metrics",{})),
+            "next alphas",run_alphas,
+            flush=True,
+        )
+        if not run_alphas:
+            raise ValueError("No alpha values remain after --resume-alpha")
+
+    for alpha in run_alphas:
         load_cenn_state_v4(student,previous_best)
         set_alpha_v4(student,alpha)
         reset_stream_state_v4(student)
