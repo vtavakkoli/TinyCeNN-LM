@@ -358,6 +358,9 @@ def main():
         a.probe_every = 20
         a.patience_probes = 4
         a.topk = 16
+        # Smoke mode asks "does progressive takeover behave correctly?", not
+        # whether the final paper-quality mixer threshold is already achieved.
+        a.max_mixer_mse = max(a.max_mixer_mse, 0.25)
         print("QUICK_SMOKE enabled:", {
             "alphas": a.alphas,
             "seq_len": a.seq_len,
@@ -367,6 +370,7 @@ def main():
             "max_stage_updates": a.max_stage_updates,
             "probe_every": a.probe_every,
             "topk": a.topk,
+            "smoke_max_mixer_mse": a.max_mixer_mse,
         }, flush=True)
     set_seed(a.seed)
 
@@ -648,12 +652,19 @@ def main():
         "alpha_schedule": alphas,
         "config": cfg.to_dict(),
         "loss": {
-            "mixer_mse": 0.35,
-            "hidden_mse": 0.15,
-            "delta_hidden_mse": 0.10,
-            "logit_kl": 0.20,
-            "topk_rank": 0.15,
-            "causal_ce": 0.05,
+            "local": {
+                "mixer_mse": 0.65,
+                "mixer_cosine": 0.20,
+                "mixer_delta": 0.15,
+            },
+            "global": {
+                "logit_kl": 0.40,
+                "topk_rank": 0.25,
+                "hidden_mse": 0.20,
+                "delta_hidden_mse": 0.10,
+                "causal_ce": 0.05,
+            },
+            "blend": "local_weight=0.85-0.30*alpha; global_weight=1-local_weight",
             "topk": a.topk,
         },
         "cenn_params": cenn_params,
