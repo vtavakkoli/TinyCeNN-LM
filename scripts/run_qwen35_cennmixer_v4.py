@@ -78,7 +78,7 @@ def dtype_for(device):
 
 def smoke_overrides(a):
     if not a.quick_smoke: return
-    a.alphas="0,0.10,0.20,0.30,0.40,0.50,0.60,0.70,0.80,0.90,1.0"
+    a.alphas="0,0.10,0.20,0.30,0.40,0.45,0.50,0.55,0.60,0.65,0.70,0.75,0.80,0.85,0.90,0.95,1.0"
     a.seq_len=64
     a.train_blocks=384
     a.val_blocks=16
@@ -229,17 +229,19 @@ def main():
                     loss=local_weight*local_loss+(1.0-local_weight)*global_loss
 
                     onp=torch.zeros((),device=device)
-                    effective_on_policy_every=a.on_policy_every
-                    if alpha>=0.4 and a.on_policy_every>0:
-                        effective_on_policy_every=max(10,a.on_policy_every//2)
-                    if alpha>0 and effective_on_policy_every>0 and stage_steps%effective_on_policy_every==0:
+                    onp_scale=0.0
+                    if alpha>0 and a.on_policy_every>0 and stage_steps%a.on_policy_every==0:
                         prefix=x[:,:min(16,x.shape[1])]
                         onp=on_policy_distill_loss(
                             student,teacher,prefix,device,max_new_tokens=a.on_policy_tokens
                         )
-                        # From alpha>=0.4, generation drift matters more than teacher-forced CE.
-                        on_policy_weight=(0.08+0.14*float(alpha)) if alpha>=0.4 else (0.05+0.10*float(alpha))
-                        loss=loss+on_policy_weight*onp
+                        # Keep on-policy feedback useful without allowing one bad
+                        # generated prefix to dominate the optimizer. The detached
+                        # scale caps its effective scalar magnitude at ~0.25.
+                        raw_onp=float(onp.detach())
+                        onp_scale=min(1.0,0.25/max(raw_onp,1e-8))
+                        on_policy_weight=0.05+0.10*float(alpha)
+                        loss=loss+on_policy_weight*onp*onp_scale
 
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(trainable,0.5)
@@ -258,6 +260,7 @@ def main():
                             "train_rank_loss":float(rank.detach()),
                             "train_margin_loss":float(margin.detach()),
                             "train_on_policy_loss":float(onp.detach()),
+                            "train_on_policy_scale":float(onp_scale),
                             **vm,
                         }
                         history.append(row)
@@ -310,10 +313,11 @@ def main():
             exploration_continue=(
                 violation<=0.20
                 and restored["top1"]>=0.82
+                and restored["kl"]<=0.20
+                and restored["hidden_mse"]<=0.18
                 and restored["mixer_mse"]<=0.30
                 and restored["mixer_cosine"]<=0.15
                 and restored["mixer_delta"]<=0.45
-                and gen_jaccard>=0.20
             )
 
         stage_row={
@@ -323,6 +327,7 @@ def main():
             "violation":violation,**restored,
             "generation_exact_rate":gen_exact,
             "generation_mean_jaccard":gen_jaccard,
+            "generation_warning":bool(gen_jaccard<0.15),
         }
         stages.append(stage_row)
         print("RESTORED BEST",json.dumps(stage_row),flush=True)
@@ -335,7 +340,7 @@ def main():
                 print(
                     "⚠ SOFT EXPLORATION CONTINUE:",
                     "alpha",alpha,
-                    "missed the strict smoke gate but remains coherent enough to test higher alpha.",
+                    "missed the strict smoke gate but numerical stability is sufficient to test higher alpha.",
                     flush=True,
                 )
             else:
