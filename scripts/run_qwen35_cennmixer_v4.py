@@ -59,6 +59,7 @@ def parse_args():
     p.add_argument("--max-mixer-mse",type=float,default=0.12)
 
     p.add_argument("--quick-smoke",action="store_true")
+    p.add_argument("--explore-high-alpha",action="store_true", help="Continue through soft smoke-gate misses while generation remains meaningful")
     p.add_argument("--output-dir",default="results/cennmixer_v4_qwen35_08b")
     p.add_argument("--seed",type=int,default=8621)
     return p.parse_args()
@@ -203,13 +204,17 @@ def main():
                     loss=local_weight*local_loss+(1.0-local_weight)*global_loss
 
                     onp=torch.zeros((),device=device)
-                    if alpha>0 and a.on_policy_every>0 and stage_steps%a.on_policy_every==0:
+                    effective_on_policy_every=a.on_policy_every
+                    if alpha>=0.4 and a.on_policy_every>0:
+                        effective_on_policy_every=max(10,a.on_policy_every//2)
+                    if alpha>0 and effective_on_policy_every>0 and stage_steps%effective_on_policy_every==0:
                         prefix=x[:,:min(16,x.shape[1])]
                         onp=on_policy_distill_loss(
                             student,teacher,prefix,device,max_new_tokens=a.on_policy_tokens
                         )
-                        # More on-policy pressure as the CeNN branch takes control.
-                        loss=loss+(0.05+0.10*float(alpha))*onp
+                        # From alpha>=0.4, generation drift matters more than teacher-forced CE.
+                        on_policy_weight=(0.08+0.14*float(alpha)) if alpha>=0.4 else (0.05+0.10*float(alpha))
+                        loss=loss+on_policy_weight*onp
 
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(trainable,0.5)
@@ -267,12 +272,32 @@ def main():
 
         restored=probe(student,teacher,val,layers,device,local_teacher=True)
         gens=generation_suite(student,teacher,tok,device)
+        hard_pass=stage_ok(restored,alpha,a)
+        violation=stage_violation(restored,alpha,a)
+        gen_exact=sum(int(x["exact"]) for x in gens)/len(gens)
+        gen_jaccard=sum(x["jaccard"] for x in gens)/len(gens)
+
+        # Exploration mode is deliberately separate from the quality gate.
+        # It allows higher-alpha diagnosis only while the model remains locally
+        # faithful and still generates recognizably related text.
+        exploration_continue=False
+        if a.quick_smoke and a.explore_high_alpha and alpha<1.0 and not hard_pass:
+            exploration_continue=(
+                violation<=0.20
+                and restored["top1"]>=0.82
+                and restored["mixer_mse"]<=0.30
+                and restored["mixer_cosine"]<=0.15
+                and restored["mixer_delta"]<=0.45
+                and gen_jaccard>=0.20
+            )
+
         stage_row={
             "alpha":alpha,"best_step":best_step,"trained_steps":stage_steps,
-            "pass":stage_ok(restored,alpha,a),
-            "violation":stage_violation(restored,alpha,a),**restored,
-            "generation_exact_rate":sum(int(x["exact"]) for x in gens)/len(gens),
-            "generation_mean_jaccard":sum(x["jaccard"] for x in gens)/len(gens),
+            "pass":hard_pass,
+            "exploration_continue":exploration_continue,
+            "violation":violation,**restored,
+            "generation_exact_rate":gen_exact,
+            "generation_mean_jaccard":gen_jaccard,
         }
         stages.append(stage_row)
         print("RESTORED BEST",json.dumps(stage_row),flush=True)
@@ -280,9 +305,17 @@ def main():
             json.dumps(gens,indent=2),encoding="utf-8"
         )
 
-        if not stage_row["pass"]:
-            print("STOPPING: alpha",alpha,"did not pass readiness gate.",flush=True)
-            break
+        if not hard_pass:
+            if exploration_continue:
+                print(
+                    "⚠ SOFT EXPLORATION CONTINUE:",
+                    "alpha",alpha,
+                    "missed the strict smoke gate but remains coherent enough to test higher alpha.",
+                    flush=True,
+                )
+            else:
+                print("STOPPING: alpha",alpha,"did not pass readiness/exploration gate.",flush=True)
+                break
 
     reached_alpha=stages[-1]["alpha"] if stages else None
     progression_complete=bool(stages and reached_alpha==1.0 and stages[-1]["pass"])
@@ -320,6 +353,8 @@ def main():
         "mixer_param_reduction_pct":100*(1-cenn_params/max(replaced_params,1)),
         "stage_summary":stages,"reached_alpha":reached_alpha,
         "progression_complete":progression_complete,
+        "exploration_mode":bool(a.explore_high_alpha),
+        "exploration_reached_alpha":reached_alpha,
         "alpha1_before_removing_qwen_mixer":alpha1_probe,
         "alpha1_generation_before_removal":alpha1_generation,
         "final_cenn_only_probe":compact_probe,
