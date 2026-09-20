@@ -19,6 +19,7 @@ from tinycenn_lm.qwen35_cennmixer_v2 import (
     CeNNMixerV2Config,
     clone_cenn_state_v2,
     direct_mixer_loss_v2,
+    direct_mixer_losses_v2,
     finalize_cenn_only_v2,
     freeze_all_except_cenn_v2,
     install_cenn_mixer_v2,
@@ -148,22 +149,41 @@ def topk_rank_loss(student_logits, teacher_logits, k=64):
 
 
 def stage_targets(alpha, a):
-    """Tighten output-preservation targets as CeNN takes over."""
+    """Safety gates for *progression*, not final scientific acceptance.
+
+    Alpha=0 is a pure local-distillation warm-up: the visible model is exactly
+    Qwen, so readiness is determined by CeNN-vs-Qwen mixer fidelity.
+
+    Intermediate alpha stages use a permissive but meaningful end-to-end safety
+    envelope. Alpha=1 uses the user's strict final thresholds.
+    """
     alpha = float(alpha)
     if alpha <= 0.0:
         return {
             "min_top1": 0.999,
-            "max_kl": min(a.max_kl, 1e-4),
-            "max_hidden_mse": min(a.max_hidden_mse, 1e-4),
+            "max_kl": 1e-4,
+            "max_hidden_mse": 1e-4,
             "max_mixer_mse": a.max_mixer_mse,
+            "max_mixer_cosine": 0.12,
+            "max_mixer_delta": 0.35,
+        }
+    if alpha < 1.0:
+        return {
+            "min_top1": 0.90,
+            "max_kl": 0.15,
+            "max_hidden_mse": 0.20,
+            "max_mixer_mse": a.max_mixer_mse,
+            "max_mixer_cosine": 0.12,
+            "max_mixer_delta": 0.35,
         }
     return {
-        "min_top1": 1.0 - alpha * (1.0 - a.min_top1),
-        "max_kl": max(a.max_kl * alpha, 0.002),
-        "max_hidden_mse": max(a.max_hidden_mse * alpha, 0.003),
+        "min_top1": a.min_top1,
+        "max_kl": a.max_kl,
+        "max_hidden_mse": a.max_hidden_mse,
         "max_mixer_mse": a.max_mixer_mse,
+        "max_mixer_cosine": 0.08,
+        "max_mixer_delta": 0.25,
     }
-
 
 def stage_violation(m, alpha, a):
     t = stage_targets(alpha, a)
@@ -172,8 +192,9 @@ def stage_violation(m, alpha, a):
         + max(m["kl"] - t["max_kl"], 0.0) / max(t["max_kl"], 1e-6)
         + max(m["hidden_mse"] - t["max_hidden_mse"], 0.0) / max(t["max_hidden_mse"], 1e-6)
         + max(m["mixer_mse"] - t["max_mixer_mse"], 0.0) / max(t["max_mixer_mse"], 1e-6)
+        + max(m["mixer_cosine"] - t["max_mixer_cosine"], 0.0) / max(t["max_mixer_cosine"], 1e-6)
+        + max(m["mixer_delta"] - t["max_mixer_delta"], 0.0) / max(t["max_mixer_delta"], 1e-6)
     )
-
 
 def stage_ok(m, alpha, a):
     t = stage_targets(alpha, a)
@@ -182,8 +203,9 @@ def stage_ok(m, alpha, a):
         and m["kl"] <= t["max_kl"]
         and m["hidden_mse"] <= t["max_hidden_mse"]
         and m["mixer_mse"] <= t["max_mixer_mse"]
+        and m["mixer_cosine"] <= t["max_mixer_cosine"]
+        and m["mixer_delta"] <= t["max_mixer_delta"]
     )
-
 
 def quality_key(m, alpha, a):
     return (
@@ -193,6 +215,8 @@ def quality_key(m, alpha, a):
         1.0 - m["top1"],
         m["hidden_mse"],
         m["mixer_mse"],
+        m["mixer_cosine"],
+        m["mixer_delta"],
         m["student_ce"],
     )
 
@@ -208,6 +232,8 @@ def probe(student, teacher, batches, layers, device):
         "hidden_mse": 0.0,
         "delta_mse": 0.0,
         "mixer_mse": 0.0,
+        "mixer_cosine": 0.0,
+        "mixer_delta": 0.0,
     }
     top = 0
     count = 0
@@ -224,7 +250,10 @@ def probe(student, teacher, batches, layers, device):
         totals["kl"] += float(distill_kl(so.logits, to.logits))
         totals["hidden_mse"] += float(hm)
         totals["delta_mse"] += float(dm)
-        totals["mixer_mse"] += float(direct_mixer_loss_v2(student))
+        local = direct_mixer_losses_v2(student)
+        totals["mixer_mse"] += float(local["mse"])
+        totals["mixer_cosine"] += float(local["cosine"])
+        totals["mixer_delta"] += float(local["delta"])
 
         top += int((so.logits.argmax(-1) == to.logits.argmax(-1)).sum())
         count += int(so.logits.shape[0] * so.logits.shape[1])
@@ -319,13 +348,13 @@ def main():
     if a.quick_smoke:
         # Fast sanity-check defaults. User-supplied values are intentionally
         # overridden so the mode stays genuinely quick and reproducible.
-        a.alphas = "0,0.50,1.0"
+        a.alphas = "0,0.10,0.25,0.50,0.75,1.0"
         a.seq_len = 32
-        a.train_blocks = 64
-        a.val_blocks = 4
-        a.stage_updates = 40
-        a.extend_updates = 30
-        a.max_stage_updates = 120
+        a.train_blocks = 96
+        a.val_blocks = 6
+        a.stage_updates = 60
+        a.extend_updates = 40
+        a.max_stage_updates = 220
         a.probe_every = 20
         a.patience_probes = 4
         a.topk = 16
@@ -410,15 +439,19 @@ def main():
         best_key = quality_key(initial, alpha, a)
         best_step = 0
         stage_steps = 0
-        target_budget = a.stage_updates
+        # Alpha=0 needs enough local warm-up to make the first takeover safe.
+        stage_max_updates = a.max_stage_updates
+        if a.quick_smoke:
+            stage_max_updates = 420 if alpha == 0.0 else 180
+        target_budget = min(a.stage_updates, stage_max_updates)
         no_improve = 0
 
         print("\n=== ALPHA", alpha, "===", flush=True)
         print("TARGETS", json.dumps(stage_targets(alpha, a)), flush=True)
         print("INITIAL", json.dumps(initial), flush=True)
 
-        while stage_steps < a.max_stage_updates:
-            while stage_steps < min(target_budget, a.max_stage_updates):
+        while stage_steps < stage_max_updates:
+            while stage_steps < min(target_budget, stage_max_updates):
                 global_step += 1
                 stage_steps += 1
                 student.train()
@@ -442,22 +475,23 @@ def main():
                     return_dict=True,
                 )
 
-                mixer = direct_mixer_loss_v2(student)
+                local_losses = direct_mixer_losses_v2(student)
+                mixer = local_losses["mse"]
+                mixer_cos = local_losses["cosine"]
+                mixer_delta = local_losses["delta"]
+
                 hm, dm = hidden_losses(so.hidden_states, to.hidden_states, layers)
                 lkl = distill_kl(so.logits, to.logits)
                 rank = topk_rank_loss(so.logits, to.logits, a.topk)
                 lce = causal_ce(so.logits, y)
 
-                # Mixer supervision is alpha-independent and therefore trains CeNN
-                # even when alpha=0 and the externally visible model is exact Qwen.
-                loss = (
-                    0.35 * mixer
-                    + 0.15 * hm
-                    + 0.10 * dm
-                    + 0.20 * lkl
-                    + 0.15 * rank
-                    + 0.05 * lce
-                )
+                # Keep local Qwen-mixer imitation dominant. v1/v2-smoke showed that
+                # letting global objectives dominate made direct mixer fidelity worse.
+                local_loss = 0.65 * mixer + 0.20 * mixer_cos + 0.15 * mixer_delta
+                global_loss = 0.40 * lkl + 0.25 * rank + 0.20 * hm + 0.10 * dm + 0.05 * lce
+                local_weight = 0.85 - 0.30 * float(alpha)   # 0.85 -> 0.55
+                global_weight = 1.0 - local_weight
+                loss = local_weight * local_loss + global_weight * global_loss
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(trainable, 0.5)
                 opt.step()
@@ -470,6 +504,8 @@ def main():
                         "stage_step": stage_steps,
                         "train_loss": float(loss.detach()),
                         "train_mixer_mse": float(mixer.detach()),
+                        "train_mixer_cosine": float(mixer_cos.detach()),
+                        "train_mixer_delta": float(mixer_delta.detach()),
                         "train_kl": float(lkl.detach()),
                         "train_rank_loss": float(rank.detach()),
                         **vm,
@@ -512,7 +548,7 @@ def main():
 
             if stage_ok(best_m, alpha, a):
                 break
-            if stage_steps >= a.max_stage_updates:
+            if stage_steps >= stage_max_updates:
                 print("! MAX STAGE UPDATES reached for alpha", alpha, flush=True)
                 break
 
@@ -523,7 +559,7 @@ def main():
                 print("↘ plateau: LR ->", opt.param_groups[0]["lr"], flush=True)
 
             old = target_budget
-            target_budget = min(target_budget + a.extend_updates, a.max_stage_updates)
+            target_budget = min(target_budget + a.extend_updates, stage_max_updates)
             print("↻ extending alpha", alpha, old, "->", target_budget, flush=True)
 
         load_cenn_state_v2(student, best_state)
@@ -549,38 +585,60 @@ def main():
             json.dumps(gens, indent=2), encoding="utf-8"
         )
 
-    # Final alpha=1 candidate while the local Qwen mixer is still available.
-    set_alpha_v2(student, 1.0)
-    alpha1_with_teacher = probe(student, teacher, val, layers, device)
-    alpha1_generations = generation_suite(student, teacher, tokenizer, device)
+        if not stage_ok(restored, alpha, a):
+            print(
+                "STOPPING PROGRESSION: alpha", alpha,
+                "did not meet readiness targets; refusing to jump to a larger alpha.",
+                flush=True,
+            )
+            break
 
-    # Now physically remove the wrapped Qwen mixer from replaced layers.
-    finalize_cenn_only_v2(student)
-    reset_stream_state_v2(student)
-    compact_probe = probe_without_local_teacher(student, teacher, val, layers, device)
-    compact_generations = generation_suite(student, teacher, tokenizer, device)
+    reached_alpha = stages[-1]["alpha"] if stages else None
 
-    torch.save(
-        {
-            "state": clone_cenn_state_v2(student),
-            "config": cfg.to_dict(),
-            "layers": layers,
-            "layer_kinds": layer_kinds,
-            "base_model": a.base_model,
-            "alpha": 1.0,
-            "cenn_only": True,
-        },
-        out / "cennmixer_v2_final_cenn_only.pt",
-    )
+    # Final alpha=1 candidate only if progressive training actually reached alpha=1.
+    alpha1_with_teacher = None
+    alpha1_generations = []
+    compact_probe = None
+    compact_generations = []
+    strict_quality = False
+
+    if reached_alpha == 1.0 and stages[-1]["pass"]:
+        set_alpha_v2(student, 1.0)
+        alpha1_with_teacher = probe(student, teacher, val, layers, device)
+        alpha1_generations = generation_suite(student, teacher, tokenizer, device)
+
+        # Physically remove the wrapped Qwen mixer only after alpha=1 passed.
+        finalize_cenn_only_v2(student)
+        reset_stream_state_v2(student)
+        compact_probe = probe_without_local_teacher(student, teacher, val, layers, device)
+        compact_generations = generation_suite(student, teacher, tokenizer, device)
+
+        torch.save(
+            {
+                "state": clone_cenn_state_v2(student),
+                "config": cfg.to_dict(),
+                "layers": layers,
+                "layer_kinds": layer_kinds,
+                "base_model": a.base_model,
+                "alpha": 1.0,
+                "cenn_only": True,
+            },
+            out / "cennmixer_v2_final_cenn_only.pt",
+        )
+        strict_quality = (
+            compact_probe["top1"] >= a.min_top1
+            and compact_probe["kl"] <= a.max_kl
+            and compact_probe["hidden_mse"] <= a.max_hidden_mse
+        )
+    else:
+        print(
+            "CeNN-only export skipped because alpha=1 was not safely reached.",
+            "Last completed alpha:", reached_alpha,
+            flush=True,
+        )
 
     pd.DataFrame(history).to_csv(out / "training_history.csv", index=False)
     pd.DataFrame(stages).to_csv(out / "stage_summary.csv", index=False)
-
-    strict_quality = (
-        compact_probe["top1"] >= a.min_top1
-        and compact_probe["kl"] <= a.max_kl
-        and compact_probe["hidden_mse"] <= a.max_hidden_mse
-    )
 
     report = {
         "architecture": "CeNNMixer-v2 progressive takeover",
@@ -602,6 +660,8 @@ def main():
         "replaced_qwen_mixer_params": replaced_params,
         "mixer_param_reduction_pct": 100.0 * (1.0 - cenn_params / max(replaced_params, 1)),
         "stage_summary": stages,
+        "reached_alpha": reached_alpha,
+        "progression_complete": bool(reached_alpha == 1.0 and stages[-1]["pass"]) if stages else False,
         "alpha1_before_removing_qwen_mixer": alpha1_with_teacher,
         "alpha1_generation_before_removal": alpha1_generations,
         "final_cenn_only_probe": compact_probe,
