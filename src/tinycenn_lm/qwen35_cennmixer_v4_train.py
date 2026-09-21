@@ -1,5 +1,6 @@
 from __future__ import annotations
 import random
+import math
 
 import torch
 import torch.nn.functional as F
@@ -10,8 +11,14 @@ from .qwen35_cennmixer_v4 import direct_mixer_losses_v4, reset_stream_state_v4
 def blocks(tokenizer,texts,n,seq_len,seed):
     rng=random.Random(seed)
     clean=[x.strip() for x in texts if isinstance(x,str) and len(x.strip())>40]
+    if n < 1 or seq_len < 2 or not clean:
+        raise ValueError("Need positive block count, seq_len >= 2 and nonempty text")
     out=[]
+    attempts=0
     while len(out)<n:
+        attempts+=1
+        if attempts > max(100, n*100):
+            raise ValueError("Corpus cannot supply enough tokens for requested sequence length")
         s=" ".join(rng.choice(clean) for _ in range(10))
         ids=tokenizer(s,return_tensors="pt",truncation=False).input_ids[0]
         if ids.numel()<seq_len+1:
@@ -72,7 +79,7 @@ def topk_rank_loss(student_logits,teacher_logits,k):
         idx=teacher_logits.topk(k,dim=-1).indices
         t=teacher_logits.gather(-1,idx).float()
         t=t-t.mean(-1,keepdim=True)
-        scale=t.std(-1,keepdim=True).clamp_min(0.25)
+        scale=t.std(-1,keepdim=True,correction=0).clamp_min(0.25)
         t=t/scale
     s=student_logits.gather(-1,idx).float()
     s=(s-s.mean(-1,keepdim=True))/scale
@@ -129,6 +136,8 @@ def stage_targets(alpha,a):
 
 def stage_ok(m,alpha,a):
     t=stage_targets(alpha,a)
+    if not all(math.isfinite(float(v)) for v in m.values()):
+        return False
     return (
         m["top1"]>=t["min_top1"] and m["kl"]<=t["max_kl"]
         and m["hidden_mse"]<=t["max_hidden_mse"]
@@ -140,6 +149,8 @@ def stage_ok(m,alpha,a):
 
 def stage_violation(m,alpha,a):
     t=stage_targets(alpha,a)
+    if not all(math.isfinite(float(v)) for v in m.values()):
+        return float("inf")
     return (
         max(t["min_top1"]-m["top1"],0)/max(1-t["min_top1"],1e-5)
         +max(m["kl"]-t["max_kl"],0)/max(t["max_kl"],1e-6)
@@ -193,6 +204,7 @@ def probe(student,teacher,batches,layers,device,local_teacher=True):
 
 def on_policy_distill_loss(student,teacher,prefix,device,max_new_tokens=12):
     """Teacher feedback on prefixes actually visited by the student."""
+    was_training=student.training
     student.eval()
     reset_stream_state_v4(student)
     with torch.no_grad():
@@ -208,7 +220,7 @@ def on_policy_distill_loss(student,teacher,prefix,device,max_new_tokens=12):
     x=gen[:,:-1]
     with torch.no_grad():
         to=teacher(input_ids=x,use_cache=False,return_dict=True)
-    student.train()
+    student.train(was_training)
     so=student(input_ids=x,use_cache=False,return_dict=True)
 
     # Emphasize the self-generated suffix; prefix is only context.
@@ -233,7 +245,7 @@ def generation_suite(student,teacher,tok,device):
     ]
     rows=[]
     for p in prompts:
-        chat=tok.apply_chat_template([{"role":"user","content":p}],tokenize=False,add_generation_prompt=True)
+        chat=tok.apply_chat_template([{"role":"user","content":p}],tokenize=False,add_generation_prompt=True,enable_thinking=False)
         enc=tok(chat,return_tensors="pt").to(device)
         def run(m):
             reset_stream_state_v4(m)

@@ -73,7 +73,7 @@ def seed_all(seed):
 
 def dtype_for(device):
     if device.type!="cuda": return torch.float32
-    return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    return torch.bfloat16 if torch.cuda.is_bf16_supported(including_emulation=False) else torch.float16
 
 
 def smoke_overrides(a):
@@ -88,8 +88,6 @@ def smoke_overrides(a):
     a.probe_every=20
     a.patience_probes=4
     a.topk=16
-    a.on_policy_every=40
-    a.on_policy_tokens=12
     print("QUICK_SMOKE V4",{
         "alphas":a.alphas,"seq_len":a.seq_len,
         "train_blocks":a.train_blocks,"val_blocks":a.val_blocks,
@@ -113,6 +111,15 @@ def main():
     alphas=[float(x) for x in a.alphas.split(",") if x.strip()]
     if not alphas or alphas[0]!=0.0 or alphas[-1]!=1.0:
         raise ValueError("alpha schedule must start at 0 and end at 1")
+
+    if not layers or len(set(layers)) != len(layers):
+        raise ValueError("layers must be nonempty and unique")
+    if any(not 0 <= x <= 1 for x in alphas) or any(x >= y for x,y in zip(alphas,alphas[1:])):
+        raise ValueError("alphas must be strictly increasing in [0,1]")
+    for name in ("seq_len","train_blocks","val_blocks","stage_updates","extend_updates",
+                 "max_stage_updates","probe_every","patience_probes","topk","on_policy_tokens"):
+        if getattr(a,name) <= 0:
+            raise ValueError(f"{name} must be positive")
 
     device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype=dtype_for(device)
@@ -139,6 +146,8 @@ def main():
 
     layer_kinds={}
     for li in layers:
+        if not 0 <= li < len(student.model.layers):
+            raise ValueError(f"Layer index out of range: {li}")
         layer=student.model.layers[li]
         layer_kinds[str(li)]=getattr(layer,"block_type","unknown")
         install_cenn_mixer_v4(student,li,cfg)
@@ -165,7 +174,11 @@ def main():
                 f"Resume checkpoint not found: {ck_path}. "
                 "Use the same Colab runtime/output directory or rerun from alpha=0."
             )
-        ck=torch.load(ck_path,map_location="cpu")
+        ck=torch.load(ck_path,map_location="cpu",weights_only=True)
+        if ck.get("config") != cfg.to_dict() or ck.get("layers") != layers:
+            raise ValueError("Resume checkpoint architecture/layers differ from this run")
+        if ck.get("base_model",a.base_model) != a.base_model:
+            raise ValueError("Resume checkpoint uses a different base model")
         load_cenn_state_v4(student,ck["state"])
         previous_best=clone_cenn_state_v4(student)
         run_alphas=[x for x in alphas if x>float(a.resume_alpha)+1e-12]
@@ -195,6 +208,12 @@ def main():
         print("TARGETS",json.dumps(stage_targets(alpha,a)),flush=True)
         print("INITIAL",json.dumps(initial),flush=True)
 
+        checkpoint_path=out/f"cennmixer_v4_alpha_{str(alpha).replace('.', 'p')}_best.pt"
+        # Even an initially passing stage must be resumable.
+        torch.save({"state":best_state,"config":cfg.to_dict(),"layers":layers,
+                    "layer_kinds":layer_kinds,"base_model":a.base_model,
+                    "alpha":alpha,"stage_step":0,"metrics":best_m},checkpoint_path)
+
         if not stage_ok(initial,alpha,a):
             trainable=freeze_all_except_cenn_v4(student)
             opt=torch.optim.AdamW(trainable,lr=a.lr,weight_decay=0.0)
@@ -202,7 +221,7 @@ def main():
             while stage_steps<cap:
                 while stage_steps<min(budget,cap):
                     global_step+=1; stage_steps+=1
-                    student.train()
+                    student.eval()  # Gradients enabled; frozen backbone stays deterministic.
 
                     ids=train[(global_step-1)%len(train)].to(device)
                     x,y=ids[:,:-1],ids[:,1:]
@@ -243,8 +262,10 @@ def main():
                         on_policy_weight=0.05+0.10*float(alpha)
                         loss=loss+on_policy_weight*onp*onp_scale
 
+                    if not torch.isfinite(loss):
+                        raise FloatingPointError(f"Non-finite loss at alpha={alpha}, step={stage_steps}; best checkpoint retained")
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(trainable,0.5)
+                    torch.nn.utils.clip_grad_norm_(trainable,0.5,error_if_nonfinite=True)
                     opt.step()
 
                     if stage_steps==1 or stage_steps%a.probe_every==0:
@@ -264,6 +285,7 @@ def main():
                             **vm,
                         }
                         history.append(row)
+                        pd.DataFrame(history).to_csv(out/"training_history.csv",index=False)
                         print("PROBE",json.dumps(row),flush=True)
 
                         key=quality_key(vm,alpha,a)
@@ -273,7 +295,7 @@ def main():
                             no_improve=0
                             torch.save({
                                 "state":best_state,"config":cfg.to_dict(),"layers":layers,
-                                "layer_kinds":layer_kinds,"alpha":alpha,
+                                "layer_kinds":layer_kinds,"base_model":a.base_model,"alpha":alpha,
                                 "stage_step":best_step,"metrics":best_m,
                             },out/f"cennmixer_v4_alpha_{str(alpha).replace('.','p')}_best.pt")
                             print("✓ NEW BEST",json.dumps({
@@ -330,6 +352,7 @@ def main():
             "generation_warning":bool(gen_jaccard<0.15),
         }
         stages.append(stage_row)
+        pd.DataFrame(stages).to_csv(out/"stage_summary.csv",index=False)
         print("RESTORED BEST",json.dumps(stage_row),flush=True)
         (out/f"generation_alpha_{str(alpha).replace('.','p')}.json").write_text(
             json.dumps(gens,indent=2),encoding="utf-8"
