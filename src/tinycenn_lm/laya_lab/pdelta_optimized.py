@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as F
 
 from .core import LayaLabConfig
-from .data import _batch_from_items, _load_typed_split, build_training_items, dataset_cases
+from .data import _batch_from_items, _load_typed_split, _parse_jsonish, build_training_items, dataset_cases
 from .evaluate import (
     _accept,
     adapter_payload,
@@ -268,6 +268,19 @@ def _prepare_local_probe(teacher, layer_idx, probe_batch):
 
 @torch.no_grad()
 def _probe_local_cached(replacement, probe, agent):
+    if isinstance(probe, list):
+        results = [(_probe_local_cached(replacement, p, agent), int(p["valid"].sum())) for p in probe]
+        total = sum(n for _, n in results)
+        metrics = {k: sum(r[k] * n for r, n in results) / max(1, total) for k in results[0][0]}
+        # NMSE is total squared error / total target energy, not the mean
+        # of per-batch ratios. Keep gates invariant to probe microbatch size.
+        for metric, target in (("nmse", "y"), ("core_nmse", "core")):
+            energies = []
+            for p in probe:
+                mask = p["valid"][:, :, None] if target == "y" else p["valid"][:, None, :, None]
+                energies.append(float((p[target].float().square() * mask).sum()))
+            metrics[metric] = sum(r[metric] * e for (r, _), e in zip(results, energies)) / max(1e-8, sum(energies))
+        return metrics
     replacement.eval()
     with torch.autocast(
         device_type=agent.device.type,
@@ -303,13 +316,39 @@ def _candidate_score(local, fast):
     )
 
 
-def _replacement_trainable_count(model):
+def _split_transfer_rows(rows, seed):
+    # Keep every question (and duplicate row) for a state in the same partition.
+    groups = {}
+    for row in rows:
+        key = json.dumps(_parse_jsonish(row["state"]), sort_keys=True)
+        groups.setdefault(key, []).append(row)
+    keys = sorted(groups)
+    if len(keys) < 2:
+        raise ValueError("at least two distinct training states are required")
+    random.Random(seed).shuffle(keys)
+    n = min(80, max(1, len(keys) // 10))
+    return ([r for k in keys[n:] for r in groups[k]],
+            [r for k in keys[:n] for r in groups[k]])
+
+
+def _checkpoint_rank(local, fast, cfg):
+    """Prefer satisfying probe thresholds before minimizing aggregate error."""
+    violations = (
+        max(0.0, local["nmse"] / cfg.max_local_nmse - 1.0),
+        max(0.0, (cfg.min_local_cosine - local["cosine"]) / max(1e-6, 1 - cfg.min_local_cosine)),
+        max(0.0, (cfg.min_teacher_agreement - fast["teacher_student_top1_agreement"]) / max(1e-6, 1 - cfg.min_teacher_agreement)),
+        max(0.0, fast["mean_teacher_kl"] / cfg.max_mean_kl - 1.0),
+    )
+    return (sum(v > 0 for v in violations), sum(violations), _candidate_score(local, fast))
+
+
+def _replacement_trainable_count(model, train_qkv=False):
     total = 0
     for layer in model.encoder.layers:
         if not isinstance(layer.attn, PDelta3GDN2CLVRAttention):
             continue
         for name, p in layer.attn.named_parameters():
-            if name.startswith("Wqkv.") or name.startswith("out_drop."):
+            if (name.startswith("Wqkv.") and not train_qkv) or name.startswith("out_drop."):
                 continue
             total += p.numel()
     return int(total)
@@ -336,22 +375,26 @@ def _train_candidate(
         conv_kernel=cfg.pdelta_conv_kernel,
         chunk_size=cfg.pdelta_chunk_size,
         local_kernel=cfg.local_kernel,
+        local_window=cfg.pdelta_local_window,
+        local_gate_init=cfg.pdelta_local_gate_init,
     ).to(student.device)
 
     proj_dtype = teacher.model.encoder.layers[layer_idx].attn.Wqkv.weight.dtype
-    replacement.Wqkv.to(device=student.device, dtype=proj_dtype)
+    replacement.Wqkv.to(device=student.device, dtype=torch.float32 if cfg.pdelta_train_qkv else proj_dtype)
     # Keep a FP32 master copy for the very low-LR Wo calibration.  Autocast
     # still executes the projection efficiently while AdamW updates retain
     # enough numerical resolution.
     replacement.Wo.to(device=student.device, dtype=torch.float32)
     layer.attn = replacement
 
-    # Freeze the complete decision model.  Only the new PDelta3 core and a
-    # low-LR calibration of the copied output projection are trainable.
+    # Freeze the decision model; tune only the replacement core and projections.
     student.model.eval().requires_grad_(False)
     core_params, output_params = [], []
     for name, p in replacement.named_parameters():
-        if name.startswith("Wqkv.") or name.startswith("out_drop."):
+        if name.startswith("Wqkv.") and cfg.pdelta_train_qkv:
+            p.requires_grad = True
+            output_params.append(p)
+        elif name.startswith("Wqkv.") or name.startswith("out_drop."):
             p.requires_grad = False
         elif name.startswith("Wo."):
             p.requires_grad = True
@@ -395,16 +438,15 @@ def _train_candidate(
         return end_ratio + (1.0 - end_ratio) * cosine
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_scale)
+    scaler = torch.amp.GradScaler("cuda", enabled=student.device.type == "cuda" and student.dtype == torch.float16)
 
     # Candidate input is identical to the teacher up to this layer, so cache
     # fixed probe hidden states/targets once instead of rerunning full models at
     # every diagnostic check.
-    probe_target = _prepare_local_probe(
-        teacher, layer_idx, probe_batch
-    )
+    probe_target = [_prepare_local_probe(teacher, layer_idx, b) for b in probe_batch]
 
     best_state = None
-    best_score = float("inf")
+    best_score = (float("inf"),) * 3
     best_local = None
     best_fast = None
     best_step = 0
@@ -417,7 +459,7 @@ def _train_candidate(
     # full-student decision distillation only after the replacement has learned
     # the teacher attention shape.  This removes a full student-model pass from
     # most optimization steps.
-    functional_start = max(40, int(round(steps * 0.60)))
+    functional_start = min(steps, max(1, int(round(steps * 0.40))))
     scheduled_functional_start = functional_start
     check_every = max(25, steps // 14)
     min_gate_step = functional_start
@@ -510,12 +552,17 @@ def _train_candidate(
                 f"non-finite PDelta3 loss layer={layer_idx} step={step}"
             )
 
-        loss.backward()
+        scaler.scale(loss).backward()
+        scaler.unscale_(opt)
         grad = torch.nn.utils.clip_grad_norm_(
             core_params + output_params, 1.0
         )
-        opt.step()
-        scheduler.step()
+        used_lr = opt.param_groups[0]["lr"]
+        previous_scale = scaler.get_scale()
+        scaler.step(opt)
+        scaler.update()
+        if scaler.get_scale() >= previous_scale:
+            scheduler.step()
 
         should_check = (
             step == 1
@@ -531,7 +578,7 @@ def _train_candidate(
                 f"dkl={float(decision_kl.detach()):.4f} "
                 f"logit={float(logit_mse.detach()):.4f} "
                 f"dw={decision_weight:.2f} "
-                f"lr={opt.param_groups[0]['lr']:.5f} "
+                f"lr={used_lr:.5f} "
                 f"stage={'functional' if functional else 'local'} "
                 f"grad={float(grad):.3f}"
             )
@@ -549,7 +596,7 @@ def _train_candidate(
             batch_size=max(4, batch_size * 4),
             limit=min(64, len(fast_items)),
         )
-        score = _candidate_score(local, fast)
+        score = _checkpoint_rank(local, fast, cfg)
         print(
             "  FAST CHECK:",
             json.dumps(
@@ -581,7 +628,7 @@ def _train_candidate(
             }
 
         # If the high-LR local transfer reaches a strong approximation early,
-        # do not wait for the fixed 60% boundary: start end-to-end refinement
+        # do not wait for the scheduled boundary: start end-to-end refinement
         # on the next step.
         if (
             step < functional_start
@@ -685,7 +732,8 @@ def _train_candidate(
         "checks": final_checks,
         "accuracy_drop": final_drop,
         "training": {
-            "steps": int(steps),
+            "steps": int(step),
+            "max_steps": int(steps),
             "core_learning_rate_start": core_lr_start,
             "core_learning_rate_end": core_lr_end,
             "output_learning_rate_start": output_lr_start,
@@ -695,10 +743,15 @@ def _train_candidate(
             "local_only_fraction": float(functional_start) / float(max(1, steps)),
             "decision_distillation": True,
             "train_output_projection": True,
-            "qkv_frozen": True,
+            "qkv_frozen": not cfg.pdelta_train_qkv,
         },
     }
 
+    # Save before rollback: failed candidates previously wrote state_dict=None.
+    candidate_path = Path(cfg.output_dir) / cfg.architecture / f"candidate_layer_{layer_idx}.pt"
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({"layer": layer_idx, "accepted": bool(accepted), "metrics": rec,
+                "config": replacement.config_dict(), "state_dict": best_state}, candidate_path)
     if not accepted:
         layer.attn = old
         del replacement
@@ -799,41 +852,25 @@ def run_pdelta3_optimized(cfg: LayaLabConfig):
     )
     train_max_len = min(int(settings["train_max_len"]), model_max_len)
 
-    all_items = build_training_items(
+    fit_rows, probe_rows = _split_transfer_rows(train_ds, cfg.seed)
+    fit_items = build_training_items(
         teacher,
-        train_ds,
+        fit_rows,
         settings["train_cases"],
         train_max_len,
         cfg.seed,
     )
-    if len(all_items) < max(48, settings["batch_size"] * 12):
+    if len(fit_items) < max(48, settings["batch_size"] * 12):
         raise RuntimeError("too few Laya attention-transfer sequences")
 
-    probe_n = min(
-        max(24, settings["batch_size"] * 8),
-        max(24, len(all_items) // 12),
-    )
-    fit_items = all_items[:-probe_n]
-    probe_items = all_items[-probe_n:]
+    fast_items = build_training_items(teacher, probe_rows, len(probe_rows), train_max_len, cfg.seed + 17)
+    if not fast_items:
+        raise RuntimeError("no held-out transfer probe sequences")
+    probe_items = fast_items[:max(24, settings["batch_size"] * 8)]
     from laya.common import collate_items
 
-    probe_batch = collate_items(
-        [[
-            probe_items[i]
-            for i in range(
-                min(len(probe_items), max(4, settings["batch_size"] * 2))
-            )
-        ]],
-        teacher.tok.pad_token_id,
-    )
-
-    fast_items = build_training_items(
-        teacher,
-        test_ds,
-        min(80, len(test_ds)),
-        train_max_len,
-        cfg.seed + 17,
-    )
+    probe_batch = [collate_items([probe_items[i:i + settings["batch_size"]]], teacher.tok.pad_token_id)
+                   for i in range(0, len(probe_items), settings["batch_size"])]
     gate_cases, final_cases = _stratified_disjoint_cases(
         test_ds,
         settings["gate_cases"],
@@ -865,10 +902,12 @@ def run_pdelta3_optimized(cfg: LayaLabConfig):
         if cfg.training_steps is not None
         else int(settings["steps"])
     )
+    if steps < 1:
+        raise ValueError("training_steps must be positive")
 
     print(
         "Attention-transfer sequences:",
-        len(all_items),
+        len(fit_items) + len(probe_items),
         "| fit:",
         len(fit_items),
         "| probe:",
@@ -885,8 +924,9 @@ def run_pdelta3_optimized(cfg: LayaLabConfig):
         ],
     )
     print(
-        "Optimized recipe: learned global linear path + GDN2 + local/direct, "
-        "end-to-end decision KL, low-LR Wo calibration, fixed local probe, "
+        f"Optimized recipe: GDN2 + bidirectional Local{cfg.pdelta_local_window} + global linear, "
+        f"QKV tuning={cfg.pdelta_train_qkv}, LR={cfg.learning_rate:g} -> {cfg.final_learning_rate}, "
+        "end-to-end decision KL, low-LR projection calibration, complete local probe, "
         "fast batched functional checks, disjoint gate/final sets."
     )
 
@@ -912,24 +952,6 @@ def run_pdelta3_optimized(cfg: LayaLabConfig):
             settings["batch_size"],
         )
         history.append(rec)
-        torch.save(
-            {
-                "layer": idx,
-                "accepted": rec["accepted"],
-                "metrics": rec,
-                "state_dict": (
-                    {
-                        k: v.detach().cpu()
-                        for k, v in student.model.encoder.layers[
-                            idx
-                        ].attn.state_dict().items()
-                    }
-                    if accepted
-                    else None
-                ),
-            },
-            out_dir / f"candidate_layer_{idx}.pt",
-        )
         if accepted:
             print(
                 f"✅ accepted layer {idx}; stopping after the first strict "
@@ -972,7 +994,7 @@ def run_pdelta3_optimized(cfg: LayaLabConfig):
         # separately.
         best_rec = min(
             history,
-            key=lambda h: _candidate_score(h["local"], h["fast_eval"]),
+            key=lambda h: _checkpoint_rank(h["local"], h["fast_eval"], cfg),
         )
         reported_fast = dict(best_rec["fast_eval"])
         reported_fast["candidate_layer"] = int(best_rec["layer"])
@@ -991,7 +1013,7 @@ def run_pdelta3_optimized(cfg: LayaLabConfig):
         "candidate_layers": candidates,
         "accepted_layers": accepted_layers,
         "replacement_trainable_parameters": _replacement_trainable_count(
-            student.model
+            student.model, cfg.pdelta_train_qkv
         ),
         "training_steps_per_candidate": steps,
         "history": history,
@@ -1007,7 +1029,9 @@ def run_pdelta3_optimized(cfg: LayaLabConfig):
         "conversion_succeeded": bool(accepted_layers),
         "student_is_unmodified_teacher": not bool(accepted_layers),
         "notes": [
-            "QKV stays frozen; copied Wo uses 10% of the core LR.",
+            f"QKV tuning={cfg.pdelta_train_qkv}; tuned projections use 10% of the core LR.",
+            f"Local window={cfg.pdelta_local_window}; nonzero windows enable query-dependent bidirectional softmax attention (hybrid).",
+            "Checkpoint selection uses held-out training states, never final-test examples; all local probe batches are checked.",
             "Core LR follows the notebook directly and decays from start to final LR without an internal cap.",
             "PDelta3 uses one GDN2 recurrent residual scan; bidirectional context comes from the global linear path.",
             "Core math follows CUDA autocast instead of forcing FP32 activation/state tensors.",

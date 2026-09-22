@@ -26,6 +26,9 @@ class LayaLabConfig:
     local_kernel: int = 5
     pdelta_conv_kernel: int = 4
     pdelta_chunk_size: int = 32
+    pdelta_local_window: int = 0  # 0 preserves legacy adapters; notebook uses Local32
+    pdelta_local_gate_init: float = 0.72
+    pdelta_train_qkv: bool = False
     learning_rate: float = 3e-4
     final_learning_rate: float | None = None
     weight_decay: float = 1e-3

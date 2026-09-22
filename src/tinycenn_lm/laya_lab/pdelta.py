@@ -30,12 +30,22 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
         conv_kernel: int = 4,
         chunk_size: int = 32,
         local_kernel: int = 5,
+        local_window: int = 0,
+        local_gate_init: float = 0.72,
     ):
         super().__init__(original)
         self.feature_dim = int(feature_dim)
         self.conv_kernel = int(conv_kernel)
         self.chunk_size = int(chunk_size)
         self.local_kernel = int(local_kernel)
+        self.local_window = int(local_window)
+        if self.local_window < 0 or not 0 < local_gate_init < 1:
+            raise ValueError("local_window must be nonnegative and local_gate_init in (0, 1)")
+        if self.local_window:
+            self.local_gate_w = nn.Parameter(torch.zeros(self.num_heads, self.head_dim))
+            self.local_gate_b = nn.Parameter(torch.full(
+                (self.num_heads,), math.log(local_gate_init / (1 - local_gate_init))
+            ))
 
         self.wq = nn.Parameter(
             _orthogonal_maps(self.num_heads, self.feature_dim, self.head_dim)
@@ -179,6 +189,10 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
         routed: Tensor,
         valid: Tensor,
     ):
+        # Padding must be zero BEFORE convolution: masking only the output
+        # allows arbitrary padded values to contaminate nearby valid tokens.
+        mask = valid[:, None, :, None].to(q.dtype)
+        q, k, v = q * mask, k * mask, v * mask
         q = _depthwise_sequence_conv(q, self.q_conv, causal=True)
         k = _depthwise_sequence_conv(k, self.k_conv, causal=True)
         v = _depthwise_sequence_conv(v, self.v_conv, causal=True)
@@ -254,6 +268,41 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
 
         return torch.stack(outs, dim=2)
 
+    def _local_attention(self, q, k, v, valid):
+        """Exact bidirectional LocalW, with O(T W) rather than T² scores.
+
+        A window of 32 contains self, 15 left and 16 right neighbours.
+        Batch query blocks together with overlapping key/value halos so SDPA
+        can execute them in one call. This is a hybrid attention replacement.
+        """
+        b, h, t, d = q.shape
+        w = self.local_window
+        left, right = (w - 1) // 2, w // 2
+        blocks = (t + w - 1) // w
+        tail = blocks * w - t
+        qp = F.pad(q, (0, 0, 0, tail)).reshape(b, h, blocks, w, d)
+
+        def windows(x):
+            return F.pad(x, (0, 0, left, right + tail)).unfold(
+                2, 2 * w - 1, w
+            ).transpose(-1, -2)
+
+        kp, vp = windows(k), windows(v)
+        key_valid = F.pad(valid, (left, right + tail)).unfold(1, 2 * w - 1, w)
+        qi = torch.arange(w, device=q.device)[:, None]
+        ki = torch.arange(2 * w - 1, device=q.device)[None, :]
+        band = (ki >= qi) & (ki < qi + w)
+        allowed = band[None, None, None] & key_valid[:, None, :, None, :]
+        def batch_blocks(x):
+            return x.transpose(1, 2).reshape(b * blocks, h, x.shape[-2], d)
+        allowed = allowed.transpose(1, 2).reshape(b * blocks, 1, w, 2 * w - 1)
+        out = F.scaled_dot_product_attention(
+            batch_blocks(qp), batch_blocks(kp), batch_blocks(vp),
+            attn_mask=allowed, dropout_p=0.0,
+        )
+        out = out.reshape(b, blocks, h, w, d).transpose(1, 2)
+        return out.reshape(b, h, blocks * w, d)[:, :, :t] * valid[:, None, :, None]
+
     def forward(
         self,
         hidden_states: Tensor,
@@ -279,7 +328,7 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
         global_out = self._global_linear(q, k, v, mask) * mask
 
         local_out = _depthwise_sequence_conv(
-            v, self.local_weight, causal=False
+            v * mask, self.local_weight, causal=False
         ) * mask
         direct_out = v * mask
 
@@ -298,6 +347,13 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
             + mix[..., 2:3] * local_out
             + mix[..., 3:4] * direct_out
         )
+        if self.local_window:
+            local_attention = self._local_attention(q, k, v, valid)
+            gate = torch.sigmoid(
+                torch.einsum("bhtd,hd->bht", q, self.local_gate_w)
+                + self.local_gate_b.to(q.dtype)[None, :, None]
+            ).unsqueeze(-1)
+            out = gate * local_attention + (1 - gate) * out
         out = (
             out
             * self.log_gain.to(out.dtype).clamp(-2, 2).exp()[None, :, None, None]
@@ -312,6 +368,9 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
             conv_kernel=self.conv_kernel,
             chunk_size=self.chunk_size,
             local_kernel=self.local_kernel,
+            local_window=self.local_window,
+            local_attention_bidirectional=bool(self.local_window),
+            hybrid_attention=bool(self.local_window),
             bidirectional=True,
             recurrent_bidirectional=False,
             bidirectional_context_source="global_linear_attention",

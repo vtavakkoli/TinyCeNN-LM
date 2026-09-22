@@ -17,6 +17,8 @@ def make_replacement(original: nn.Module, cfg: LayaLabConfig) -> BaseLayaReplace
             cfg.pdelta_conv_kernel,
             cfg.pdelta_chunk_size,
             cfg.local_kernel,
+            local_window=cfg.pdelta_local_window,
+            local_gate_init=cfg.pdelta_local_gate_init,
         )
     raise ValueError(f"unknown architecture {cfg.architecture!r}")
 
