@@ -121,12 +121,16 @@ class MemoryFusionV3Attention(BaseLayaReplacementAttention):
         self.gdn_bwd = _BiGDN2(self.num_heads, self.head_dim, self.memory_rank)
 
         self.fusion_w = nn.Parameter(torch.zeros(self.num_heads, 4, self.head_dim))
-        prior = torch.tensor([2.0, -0.5, -1.0, -1.0])
+        # Fast phase starts with only the vectorized local + full-sequence
+        # Hedgehog branches. Recurrent GDN2 is activated only when the fixed
+        # probe is already close enough to benefit from memory refinement.
+        prior = torch.tensor([1.5, 0.5, -4.0, -4.0])
         self.fusion_bias = nn.Parameter(
             prior[None, :].expand(self.num_heads, -1).clone()
         )
         self.branch_log_gain = nn.Parameter(torch.zeros(self.num_heads, 4))
         self.output_log_gain = nn.Parameter(torch.zeros(self.num_heads))
+        self.memory_enabled = False
         for p in self.Wo.parameters():
             p.requires_grad = True
 
@@ -193,16 +197,21 @@ class MemoryFusionV3Attention(BaseLayaReplacementAttention):
         valid = _valid_tokens(attention_mask, hidden_states)
         local = self._symmetric_local(q, k, v, valid)
         hedge = self._hedgehog_full(q, k, v, valid)
-        gdn_fwd = self.gdn_fwd(q, k, v, valid, reverse=False)
-        gdn_bwd = self.gdn_bwd(q, k, v, valid, reverse=True)
-        branches = torch.stack((local, hedge, gdn_fwd, gdn_bwd), dim=-2)
-        gains = self.branch_log_gain.float().clamp(-2, 2).exp()
-        branches = branches * gains[None, :, None, :, None]
-        logits = (
+        all_logits = (
             torch.einsum("bhtd,hcd->bhtc", q.float(), self.fusion_w.float())
             + self.fusion_bias.float()[None, :, None, :]
         )
-        weights = logits.softmax(dim=-1)
+        gains = self.branch_log_gain.float().clamp(-2, 2).exp()
+        if self.memory_enabled:
+            gdn_fwd = self.gdn_fwd(q, k, v, valid, reverse=False)
+            gdn_bwd = self.gdn_bwd(q, k, v, valid, reverse=True)
+            branches = torch.stack((local, hedge, gdn_fwd, gdn_bwd), dim=-2)
+            branches = branches * gains[None, :, None, :, None]
+            weights = all_logits.softmax(dim=-1)
+        else:
+            branches = torch.stack((local, hedge), dim=-2)
+            branches = branches * gains[:, :2][None, :, None, :, None]
+            weights = all_logits[..., :2].softmax(dim=-1)
         out = (weights[..., None] * branches).sum(dim=-2)
         out = (
             out
@@ -210,6 +219,13 @@ class MemoryFusionV3Attention(BaseLayaReplacementAttention):
             * valid[:, None, :, None].float()
         )
         return self.finish(out, hidden_states)
+
+    def enable_memory_refinement(self):
+        if not self.memory_enabled:
+            self.memory_enabled = True
+            with torch.no_grad():
+                self.fusion_bias[:, 2:].fill_(-1.0)
+            print("  enabling forward/backward GDN2 memory refinement")
 
     def core_parameters(self) -> list[nn.Parameter]:
         blocked = {id(p) for p in self.Wqkv.parameters()} | {id(p) for p in self.Wo.parameters()}
@@ -228,7 +244,9 @@ class MemoryFusionV3Attention(BaseLayaReplacementAttention):
             local_branch="symmetric_qkv_sparse_softmax",
             global_branch="bidirectional_full_sequence_hedgehog",
             memory_branches=["gdn2_forward", "gdn2_backward"],
-            fusion_prior=[2.0, -0.5, -1.0, -1.0],
+            fusion_prior_fast=[1.5, 0.5, -4.0, -4.0],
+            fusion_prior_memory=[1.5, 0.5, -1.0, -1.0],
+            memory_enabled=self.memory_enabled,
             train_output_projection=True,
             supported_attention_type="full_attention",
         )
@@ -249,7 +267,7 @@ class LayaMemoryFusionV3Config:
     batch_size: int = 4
     train_cache_batches: int = 48
     probe_cache_batches: int = 8
-    functional_steps: int = 240
+    functional_steps: int = 200
     max_rounds: int = 2
     check_every: int = 20
     min_steps_before_check: int = 40
@@ -258,6 +276,8 @@ class LayaMemoryFusionV3Config:
     round_lr_decay: float = 0.60
     weight_decay: float = 1e-3
     cosine_weight: float = 0.30
+    memory_enable_nmse: float = 0.32
+    memory_enable_cosine: float = 0.82
     max_local_nmse: float = 0.20
     min_local_cosine: float = 0.90
     min_teacher_agreement: float = 0.95
@@ -492,6 +512,14 @@ def _train_functional_round(
             f"  PROBE: NMSE={probe['nmse']:.4f} cos={probe['cosine']:.4f} "
             f"best={best['nmse']:.4f}/{best['cosine']:.4f}"
         )
+
+        if (
+            not replacement.memory_enabled
+            and probe["nmse"] <= cfg.memory_enable_nmse
+            and probe["cosine"] >= cfg.memory_enable_cosine
+        ):
+            replacement.enable_memory_refinement()
+            stale_checks = 0
 
         if (
             probe["nmse"] <= cfg.max_local_nmse
@@ -892,6 +920,8 @@ def run_memory_fusion_v3(cfg: LayaMemoryFusionV3Config):
             "The Hedgehog branch is full-sequence and bidirectional.",
             "Forward and backward GDN2 memories use separate parameters.",
             "Layer 12 is trained from cached teacher attention I/O for substantially faster iteration.",
+            "Fast functional fitting uses only vectorized local+Hedgehog branches at first.",
+            "Recurrent forward/backward GDN2 is activated only when the fixed probe reaches the near-gate region.",
             "Full-model Laya decision evaluation is deferred until local fidelity passes.",
         ],
     }
