@@ -56,6 +56,24 @@ class LayaLabConfig:
                     batch_size=4, train_max_len=768, max_candidates=6,
                 ),
             }
+        elif self.architecture == "pdelta3_gdn2_clvr":
+            # PDelta3 now trains through the full Laya decision stack.  Use a
+            # broader transfer set, two full-attention candidates, and modest
+            # batches that fit comfortably on a T4 at useful sequence lengths.
+            modes = {
+                "smoke": dict(
+                    train_cases=48, gate_cases=20, final_cases=40, steps=100,
+                    batch_size=1, train_max_len=256, max_candidates=1,
+                ),
+                "balanced": dict(
+                    train_cases=400, gate_cases=80, final_cases=200, steps=900,
+                    batch_size=2, train_max_len=384, max_candidates=2,
+                ),
+                "extended": dict(
+                    train_cases=800, gate_cases=160, final_cases=400, steps=1600,
+                    batch_size=2, train_max_len=512, max_candidates=2,
+                ),
+            }
         else:
             modes = {
                 "smoke": dict(
