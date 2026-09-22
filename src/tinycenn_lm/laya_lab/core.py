@@ -28,6 +28,7 @@ class LayaLabConfig:
     pdelta_chunk_size: int = 32
     learning_rate: float = 3e-4
     weight_decay: float = 1e-3
+    training_steps: int | None = None
     min_teacher_agreement: float = 0.95
     max_mean_kl: float = 0.05
     max_accuracy_drop: float = 0.02
