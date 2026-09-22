@@ -33,10 +33,29 @@ def replaced_layers(model: nn.Module) -> list[int]:
         if isinstance(layer.attn, BaseLayaReplacementAttention)
     ]
 
-def choose_candidate_layers(model: nn.Module, max_candidates: int) -> list[int]:
+def choose_candidate_layers(
+    model: nn.Module,
+    max_candidates: int,
+    preferred_attention_type: str | None = None,
+) -> list[int]:
     n = len(model.encoder.layers)
     indices = list(range(1, max(1, n - 1)))
     center = (n - 1) / 2.0
+
+    if preferred_attention_type is not None:
+        preferred = [
+            i for i in indices
+            if str(getattr(model.encoder.layers[i], "attention_type", "unknown"))
+            == preferred_attention_type
+        ]
+        preferred.sort(key=lambda i: abs(i - center))
+        if len(preferred) >= max_candidates:
+            return preferred[:max_candidates]
+
+        fallback = [i for i in indices if i not in preferred]
+        fallback.sort(key=lambda i: abs(i - center))
+        return (preferred + fallback)[:max_candidates]
+
     indices.sort(key=lambda i: (
         abs(i - center),
         0 if getattr(model.encoder.layers[i], "attention_type", "") == "sliding_attention" else 1
