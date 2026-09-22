@@ -30,6 +30,8 @@ class LayaLabConfig:
     weight_decay: float = 1e-3
     training_steps: int | None = None
     target_layers: tuple[int, ...] | None = None
+    target_all_full_attention: bool = False
+    early_stop_local: bool = True
     min_teacher_agreement: float = 0.95
     max_mean_kl: float = 0.05
     max_accuracy_drop: float = 0.02
