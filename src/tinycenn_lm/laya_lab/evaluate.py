@@ -155,6 +155,147 @@ def benchmark_latency(agent, state, questions, warmup: int = 3, repeats: int = 2
         "repeats": repeats,
     }
 
+
+@torch.no_grad()
+def fast_teacher_student_eval(
+    teacher_agent,
+    student_agent,
+    items,
+    batch_size: int = 16,
+    limit: int = 128,
+):
+    """Fast batched functional comparison without gold-label scoring.
+
+    This bypasses Agent.predict/tokenization and compares the two DecisionModel
+    forwards directly on already-tokenized Laya question sequences.  It is
+    intended for frequent training diagnostics; evaluate_agent remains the
+    authoritative gold-label gate.
+    """
+    from laya.common import collate_items, temp_bucket
+
+    seqs = list(items[: max(1, int(limit))])
+    if not seqs:
+        raise RuntimeError("fast eval received no tokenized items")
+
+    teacher_agent.model.eval()
+    student_agent.model.eval()
+
+    def _sync(agent):
+        if agent.device.type == "cuda":
+            torch.cuda.synchronize(agent.device)
+
+    def _forward(agent, batch):
+        args = [
+            batch[k].to(agent.device)
+            for k in (
+                "input_ids",
+                "attention_mask",
+                "marker_pos",
+                "marker_mask",
+                "qtype",
+            )
+        ]
+        _sync(agent)
+        t0 = time.perf_counter()
+        with torch.autocast(
+            device_type=agent.device.type,
+            dtype=agent.dtype,
+            enabled=agent.device.type == "cuda",
+        ):
+            out = agent.model(*args)
+        _sync(agent)
+        return out, time.perf_counter() - t0
+
+    # One small warm-up removes first-call CUDA/kernel noise from the timing.
+    warm = collate_items(
+        [[seqs[i] for i in range(min(len(seqs), max(1, batch_size)))]],
+        teacher_agent.tok.pad_token_id,
+    )
+    _forward(teacher_agent, warm)
+    _forward(student_agent, warm)
+
+    agreements, kls, l1s, logit_rmses = [], [], [], []
+    act_kls = []
+    teacher_s = student_s = 0.0
+    n = 0
+
+    for start in range(0, len(seqs), max(1, batch_size)):
+        chunk = seqs[start : start + max(1, batch_size)]
+        batch = collate_items([chunk], teacher_agent.tok.pad_token_id)
+        (tlog, tact), dt_t = _forward(teacher_agent, batch)
+        (slog, sact), dt_s = _forward(student_agent, batch)
+        teacher_s += dt_t
+        student_s += dt_s
+
+        marker_mask = batch["marker_mask"].bool()
+        qtype = batch["qtype"].long()
+        for i in range(len(chunk)):
+            k = int(marker_mask[i].sum().item())
+            if k <= 0:
+                continue
+            qt = int(qtype[i].item())
+            temp = teacher_agent.temperature_by_options.get(
+                temp_bucket(qt, k),
+                teacher_agent.temperature[qt],
+            )
+            tz = tlog[i, :k].float() / float(temp)
+            sz = slog[i, :k].float() / float(temp)
+            tp = torch.softmax(tz, dim=-1)
+            sp = torch.softmax(sz, dim=-1)
+
+            agreements.append(int(tp.argmax().item() == sp.argmax().item()))
+            kls.append(
+                float(
+                    torch.sum(
+                        tp
+                        * (
+                            torch.log(tp.clamp_min(1e-9))
+                            - torch.log(sp.clamp_min(1e-9))
+                        )
+                    ).item()
+                )
+            )
+            l1s.append(float(torch.mean(torch.abs(tp - sp)).item()))
+
+            tc = tz - tz.mean()
+            sc = sz - sz.mean()
+            logit_rmses.append(
+                float(torch.sqrt(torch.mean((tc - sc) ** 2)).item())
+            )
+
+            ta = torch.softmax(tact[i].float(), dim=-1)
+            sa = torch.softmax(sact[i].float(), dim=-1)
+            act_kls.append(
+                float(
+                    torch.sum(
+                        ta
+                        * (
+                            torch.log(ta.clamp_min(1e-9))
+                            - torch.log(sa.clamp_min(1e-9))
+                        )
+                    ).item()
+                )
+            )
+            n += 1
+
+    teacher_ms = 1000.0 * teacher_s / max(n, 1)
+    student_ms = 1000.0 * student_s / max(n, 1)
+    return {
+        "n_questions": int(n),
+        "teacher_student_top1_agreement": float(np.mean(agreements)),
+        "mean_teacher_kl": float(np.mean(kls)),
+        "mean_probability_l1": float(np.mean(l1s)),
+        "centered_logit_rmse": float(np.mean(logit_rmses)),
+        "mean_action_kl": float(np.mean(act_kls)),
+        "teacher_forward_ms_per_question": teacher_ms,
+        "student_forward_ms_per_question": student_ms,
+        "forward_speedup_vs_teacher": (
+            teacher_ms / student_ms if student_ms > 0 else float("inf")
+        ),
+        "batch_size": int(batch_size),
+    }
+
+
 def adapter_payload(model: nn.Module, cfg: LayaLabConfig, report: dict):
     adapters = {}
     for i, layer in enumerate(model.encoder.layers):
