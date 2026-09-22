@@ -12,6 +12,11 @@ from .evaluate import evaluate_agent, _accept, benchmark_latency, adapter_payloa
 def run_experiment(cfg: LayaLabConfig):
     if cfg.architecture not in ARCHITECTURES:
         raise ValueError(f"architecture must be one of {sorted(ARCHITECTURES)}")
+    if cfg.architecture == "pdelta3_gdn2_clvr":
+        # PDelta3 has a dedicated end-to-end distillation runner.  Keep the
+        # generic runner for the other Laya attention experiments.
+        from .pdelta_optimized import run_pdelta3_optimized
+        return run_pdelta3_optimized(cfg)
     random.seed(cfg.seed)
     np.random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
