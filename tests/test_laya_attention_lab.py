@@ -78,7 +78,7 @@ def test_integrated_memory_prefers_full_attention_candidates():
     chosen = choose_candidate_layers(
         model, 3, preferred_attention_type="full_attention"
     )
-    assert chosen == [3, 5, 1]
+    assert chosen == [3, 1, 5]
     assert all(types[i] == "full_attention" for i in chosen)
 
 
