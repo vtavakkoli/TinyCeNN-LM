@@ -12,7 +12,11 @@ def make_replacement(original: nn.Module, cfg: LayaLabConfig) -> BaseLayaReplace
         return MemoryFusionAttention(original, cfg.feature_dim, cfg.memory_rank, cfg.local_kernel)
     if cfg.architecture == "pdelta3_gdn2_clvr":
         return PDelta3GDN2CLVRAttention(
-            original, cfg.feature_dim, cfg.pdelta_conv_kernel, cfg.pdelta_chunk_size
+            original,
+            cfg.feature_dim,
+            cfg.pdelta_conv_kernel,
+            cfg.pdelta_chunk_size,
+            cfg.local_kernel,
         )
     raise ValueError(f"unknown architecture {cfg.architecture!r}")
 

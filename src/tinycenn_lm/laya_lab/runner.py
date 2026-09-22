@@ -44,9 +44,17 @@ def run_experiment(cfg: LayaLabConfig):
     print("Teacher gate accuracy:", round(teacher_gate["accuracy"], 4))
 
     candidates = choose_candidate_layers(student.model, settings["max_candidates"])
+    if cfg.architecture == "pdelta3_gdn2_clvr":
+        # PDelta3 is a global bidirectional recurrence. Full-attention layers
+        # are the closer structural match, so try them before sliding attention.
+        candidates.sort(key=lambda i: (
+            0 if str(student.model.encoder.layers[i].attention_type) == "full_attention" else 1,
+            abs(i - (len(student.model.encoder.layers) - 1) / 2.0),
+        ))
     print("Candidate ModernBERT layers:", [
         (i, student.model.encoder.layers[i].attention_type) for i in candidates
     ])
+    train_steps = cfg.training_steps if cfg.training_steps is not None else settings["steps"]
     history = []
     for idx in candidates:
         print(
@@ -54,7 +62,7 @@ def run_experiment(cfg: LayaLabConfig):
             f"({student.model.encoder.layers[idx].attention_type}) ==="
         )
         replacement, local = train_one_replacement(
-            teacher, idx, cfg, train_items, settings["steps"], settings["batch_size"]
+            teacher, idx, cfg, train_items, train_steps, settings["batch_size"]
         )
         old = student.model.encoder.layers[idx].attn
         student.model.encoder.layers[idx].attn = replacement.to(student.device)
@@ -136,6 +144,7 @@ def run_experiment(cfg: LayaLabConfig):
         "candidate_layers": candidates,
         "accepted_layers": replaced_layers(student.model),
         "replacement_trainable_parameters": replacement_parameters(student.model),
+        "training_steps_per_candidate": train_steps,
         "history": history,
         "teacher_final": teacher_final,
         "student_final": student_final,
@@ -146,6 +155,8 @@ def run_experiment(cfg: LayaLabConfig):
             "not interchangeable with causal-LM results."
         ),
     }
+    report["conversion_succeeded"] = bool(report["accepted_layers"])
+    report["student_is_unmodified_teacher"] = not report["conversion_succeeded"]
     torch.save(adapter_payload(student.model, cfg, report), out_dir / "adapter.pt")
     (out_dir / "report.json").write_text(
         json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
