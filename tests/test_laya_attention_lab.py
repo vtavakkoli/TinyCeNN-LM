@@ -7,6 +7,7 @@ from tinycenn_lm.laya_lab import (
     PDelta3GDN2CLVRAttention,
 )
 from tinycenn_lm.laya_lab.core import LayaLabConfig
+from tinycenn_lm.laya_lab.factory import choose_candidate_layers
 
 
 class DummyConfig:
@@ -59,6 +60,39 @@ def test_integrated_memory_v22_qk_maps_share_warm_start_but_not_storage():
     )
     assert torch.allclose(module.wq, module.wk)
     assert module.wq.data_ptr() != module.wk.data_ptr()
+
+
+def test_integrated_memory_v22_prefers_four_full_attention_layers():
+    class Layer:
+        def __init__(self, attention_type):
+            self.attention_type = attention_type
+
+    class Encoder:
+        layers = [
+            Layer("sliding_attention"),
+            Layer("full_attention"),
+            Layer("sliding_attention"),
+            Layer("full_attention"),
+            Layer("sliding_attention"),
+            Layer("full_attention"),
+            Layer("sliding_attention"),
+            Layer("full_attention"),
+            Layer("sliding_attention"),
+        ]
+
+    class Model:
+        encoder = Encoder()
+
+    chosen = choose_candidate_layers(
+        Model(),
+        4,
+        preferred_attention_type="full_attention",
+    )
+    assert chosen == [3, 5, 1, 7]
+    assert all(
+        Model.encoder.layers[i].attention_type == "full_attention"
+        for i in chosen
+    )
 
 
 def test_integrated_memory_v22_balanced_transfer_budget():
