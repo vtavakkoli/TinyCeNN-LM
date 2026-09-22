@@ -893,7 +893,7 @@ def run_pdelta3_optimized(cfg: LayaLabConfig):
         teacher_agent=teacher,
         label=cfg.architecture,
     )
-    final_fast = fast_teacher_student_eval(
+    final_model_fast = fast_teacher_student_eval(
         teacher,
         student,
         fast_items,
@@ -907,6 +907,28 @@ def run_pdelta3_optimized(cfg: LayaLabConfig):
         for i, layer in enumerate(student.model.encoder.layers)
         if isinstance(layer.attn, PDelta3GDN2CLVRAttention)
     ]
+    if accepted_layers:
+        reported_fast = final_model_fast
+        fast_eval_subject = "accepted_student"
+        restored_teacher_fast = None
+    elif history:
+        # Do not hide a rejected candidate's real speed/quality behind the
+        # restored teacher copy.  Report the best candidate diagnostic as the
+        # primary fast comparison and keep the restored-teacher identity check
+        # separately.
+        best_rec = min(
+            history,
+            key=lambda h: _candidate_score(h["local"], h["fast_eval"]),
+        )
+        reported_fast = dict(best_rec["fast_eval"])
+        reported_fast["candidate_layer"] = int(best_rec["layer"])
+        fast_eval_subject = "best_rejected_candidate"
+        restored_teacher_fast = final_model_fast
+    else:
+        reported_fast = final_model_fast
+        fast_eval_subject = "unmodified_teacher"
+        restored_teacher_fast = final_model_fast
+
     report = {
         "architecture": cfg.architecture,
         "model_id": cfg.model_id,
@@ -922,16 +944,20 @@ def run_pdelta3_optimized(cfg: LayaLabConfig):
         "teacher_gate": teacher_gate,
         "teacher_final": teacher_final,
         "student_final": student_final,
-        "fast_eval": final_fast,
+        "fast_eval": reported_fast,
+        "fast_eval_subject": fast_eval_subject,
+        "restored_teacher_fast_eval": restored_teacher_fast,
         "latency": latency,
         "demo": demo,
         "gate_final_disjoint": True,
         "conversion_succeeded": bool(accepted_layers),
         "student_is_unmodified_teacher": not bool(accepted_layers),
         "notes": [
-            "QKV stays frozen; copied Wo is calibrated at 5% of the core LR.",
-            "PDelta3 now includes a learned positive-feature global linear path.",
-            "Training combines local attention/core fidelity with decision/action distillation.",
+            "QKV stays frozen; copied Wo uses 10% of the core LR.",
+            "Core LR follows the notebook directly and decays from start to final LR without an internal cap.",
+            "PDelta3 uses one GDN2 recurrent residual scan; bidirectional context comes from the global linear path.",
+            "Core math follows CUDA autocast instead of forcing FP32 activation/state tensors.",
+            "Training uses a fast local-transfer stage before full decision/action refinement.",
             "Fast eval is batched and label-free; strict acceptance still uses held-out Agent.predict metrics.",
             "Gate and final evaluation sets are disjoint and workflow-stratified.",
             "Only full-attention candidates are attempted; training stops after the first strict pass.",
@@ -950,8 +976,11 @@ def run_pdelta3_optimized(cfg: LayaLabConfig):
     print("\nAccepted layers:", accepted_layers)
     print("Final student metrics:")
     print(json.dumps(student_final, indent=2))
-    print("Fast teacher/student comparison:")
-    print(json.dumps(final_fast, indent=2))
+    print("Fast teacher/student comparison:", fast_eval_subject)
+    print(json.dumps(reported_fast, indent=2))
+    if restored_teacher_fast is not None:
+        print("Restored-teacher identity check:")
+        print(json.dumps(restored_teacher_fast, indent=2))
     print("Latency:")
     print(json.dumps(latency, indent=2))
     print("Saved:", out_dir / "adapter.pt")
