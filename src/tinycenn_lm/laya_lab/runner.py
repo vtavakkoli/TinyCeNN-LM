@@ -169,9 +169,21 @@ def run_experiment(cfg: LayaLabConfig):
         "latency": latency,
         "demo": demo,
         "note": (
-            "Laya uses a bidirectional ModernBERT encoder. Integrated Memory V2.2 "
-            "uses learned attention transfer and tries full-attention layers first; "
-            "these results are not interchangeable with causal-LM conversions."
+            (
+                "Laya uses a bidirectional ModernBERT encoder. Integrated Memory V2.2 "
+                "uses learned attention transfer and tries full-attention layers first; "
+                "these results are not interchangeable with causal-LM conversions."
+            )
+            if cfg.architecture == "integrated_memory_v22"
+            else (
+                "PDelta3 is a bidirectional encoder adaptation; these Laya results are "
+                "not interchangeable with causal-LM results."
+            )
+            if cfg.architecture == "pdelta3_gdn2_clvr"
+            else (
+                "MemoryFusion is evaluated as a bidirectional Laya encoder adaptation; "
+                "these results are not interchangeable with causal-LM results."
+            )
         ),
     }
     report["conversion_succeeded"] = bool(report["accepted_layers"])
