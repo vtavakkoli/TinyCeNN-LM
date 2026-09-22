@@ -253,14 +253,39 @@ def _stratified_disjoint_cases(ds, gate_count, final_count, seed):
 
 
 @torch.no_grad()
-def _probe_local(teacher, student, layer_idx, probe_batch):
-    cap, _ = _student_forward_capture(student, layer_idx, probe_batch, False)
-    target, target_core = _teacher_attention_target(
-        teacher, layer_idx, cap["x"], cap["pos"], cap["mask"]
+def _prepare_local_probe(teacher, layer_idx, probe_batch):
+    """Cache immutable teacher-side probe targets once per candidate."""
+    cap, _ = _teacher_forward_capture(teacher, layer_idx, probe_batch)
+    return {
+        "x": cap["x"],
+        "pos": cap["pos"],
+        "mask": cap["mask"],
+        "y": cap["y"],
+        "core": cap["core"],
+        "valid": probe_batch["attention_mask"].to(teacher.device).bool(),
+    }
+
+
+@torch.no_grad()
+def _probe_local_cached(replacement, probe, agent):
+    replacement.eval()
+    with torch.autocast(
+        device_type=agent.device.type,
+        dtype=agent.dtype,
+        enabled=agent.device.type == "cuda",
+    ):
+        pred, _ = replacement(
+            probe["x"],
+            position_embeddings=probe["pos"],
+            attention_mask=probe["mask"],
+        )
+    core_pred = replacement.last_core_output
+    if core_pred is None:
+        raise RuntimeError("replacement did not expose probe core output")
+    nmse, cosine = _local_metrics(pred, probe["y"], probe["valid"])
+    core_nmse, core_cosine = _core_metrics(
+        core_pred, probe["core"], probe["valid"]
     )
-    valid = probe_batch["attention_mask"].to(student.device).bool()
-    nmse, cosine = _local_metrics(cap["y"], target, valid)
-    core_nmse, core_cosine = _core_metrics(cap["core"], target_core, valid)
     return {
         "nmse": float(nmse.item()),
         "cosine": float(cosine.item()),
@@ -370,6 +395,13 @@ def _train_candidate(
         return end_ratio + (1.0 - end_ratio) * cosine
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_scale)
+
+    # Candidate input is identical to the teacher up to this layer, so cache
+    # fixed probe hidden states/targets once instead of rerunning full models at
+    # every diagnostic check.
+    probe_target = _prepare_local_probe(
+        teacher, layer_idx, probe_batch
+    )
 
     best_state = None
     best_score = float("inf")
@@ -506,15 +538,15 @@ def _train_candidate(
             continue
 
         replacement.eval()
-        local = _probe_local(
-            teacher, student, layer_idx, probe_batch
+        local = _probe_local_cached(
+            replacement, probe_target, student
         )
         fast = fast_teacher_student_eval(
             teacher,
             student,
             fast_items,
             batch_size=max(4, batch_size * 4),
-            limit=min(128, len(fast_items)),
+            limit=min(64, len(fast_items)),
         )
         score = _candidate_score(local, fast)
         print(
@@ -594,15 +626,15 @@ def _train_candidate(
     replacement.eval()
 
     # Re-evaluate the best checkpoint, not merely the final optimizer step.
-    best_local = _probe_local(
-        teacher, student, layer_idx, probe_batch
+    best_local = _probe_local_cached(
+        replacement, probe_target, student
     )
     best_fast = fast_teacher_student_eval(
         teacher,
         student,
         fast_items,
         batch_size=max(4, batch_size * 4),
-        limit=min(128, len(fast_items)),
+        limit=min(96, len(fast_items)),
     )
     final_gate = evaluate_agent(
         student,
