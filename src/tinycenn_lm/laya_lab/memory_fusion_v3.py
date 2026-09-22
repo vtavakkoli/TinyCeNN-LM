@@ -87,7 +87,7 @@ class _BiGDN2(nn.Module):
 
 
 class MemoryFusionV3Attention(BaseLayaReplacementAttention):
-    """Native bidirectional full-attention MemoryFusion for Laya/ModernBERT."""
+    """Native bidirectional full/sliding-attention MemoryFusion for Laya/ModernBERT."""
 
     architecture = "memory_fusion_v3"
 
@@ -99,8 +99,18 @@ class MemoryFusionV3Attention(BaseLayaReplacementAttention):
         dilations: tuple[int, ...] = (1, 2, 4, 8, 16, 32, 64),
     ):
         super().__init__(original)
-        if getattr(original, "sliding_window", None) is not None:
-            raise ValueError("MemoryFusionV3 supports ModernBERT full_attention only")
+        self.sliding_window = getattr(original, "sliding_window", None)
+        if self.sliding_window is not None:
+            # HF attention's value can include a FlashAttention +1 offset.
+            # The config/mask radius is the actual inclusive token distance.
+            radius = getattr(original.config, "sliding_window", None)
+            if radius is None and hasattr(original.config, "local_attention"):
+                radius = original.config.local_attention // 2
+            if radius is not None:
+                self.sliding_window = int(radius)
+        if self.sliding_window is not None:
+            if not isinstance(self.sliding_window, int) or self.sliding_window < 0:
+                raise ValueError("Expected ModernBERT sliding_window radius as a nonnegative int")
         self.feature_dim = int(feature_dim)
         self.memory_rank = int(memory_rank)
         self.dilations = tuple(int(d) for d in dilations)
@@ -133,9 +143,29 @@ class MemoryFusionV3Attention(BaseLayaReplacementAttention):
         )
         self.branch_log_gain = nn.Parameter(torch.zeros(self.num_heads, 5))
         self.output_log_gain = nn.Parameter(torch.zeros(self.num_heads))
-        self.memory_enabled = False
+        self.register_buffer("_memory_enabled", torch.tensor(False))
+        self._memory_active = False
         for p in self.Wo.parameters():
             p.requires_grad = True
+
+    @property
+    def memory_enabled(self):
+        return self._memory_active
+
+    @memory_enabled.setter
+    def memory_enabled(self, enabled):
+        if enabled and self.sliding_window is not None:
+            raise ValueError("Unbounded recurrent memory cannot preserve a sliding window")
+        self._memory_enabled.fill_(enabled)
+        self._memory_active = bool(enabled)
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        # Older V3 weights lack the flag; their config supplies memory_enabled.
+        state_dict.setdefault(prefix + "_memory_enabled", self._memory_enabled.clone())
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+        self._memory_active = bool(self._memory_enabled.item())
+        if self._memory_active and self.sliding_window is not None:
+            raise ValueError("Sliding attention checkpoint cannot enable unbounded memory")
 
     def _symmetric_local(self, q: Tensor, k: Tensor, v: Tensor, valid: Tensor) -> Tensor:
         q, k, v = q.float(), k.float(), v.float()
@@ -150,6 +180,8 @@ class MemoryFusionV3Attention(BaseLayaReplacementAttention):
             )
             raw_index = pos[:, None] + offsets[None, :]
             inside = (raw_index >= 0) & (raw_index < t)
+            if self.sliding_window is not None:
+                inside = inside & (offsets.abs()[None, :] <= self.sliding_window)
             index = raw_index.clamp(0, t - 1)
             kn = k[:, :, index, :]
             vn = v[:, :, index, :]
@@ -189,6 +221,23 @@ class MemoryFusionV3Attention(BaseLayaReplacementAttention):
         mask = valid[:, None, :, None].float()
         kf = kf * mask
         vf = v * mask
+        if self.sliding_window is not None:
+            # Bounded query chunks avoid a T x T matrix and a T x F x D
+            # prefix-state tensor. Work is O(T * (window + chunk) * (F + D)).
+            outputs = []
+            t = q.shape[2]
+            radius = self.sliding_window
+            for start in range(0, t, 64):
+                end = min(start + 64, t)
+                lo, hi = max(0, start - radius), min(t, end + radius)
+                weights = qf[:, :, start:end] @ kf[:, :, lo:hi].transpose(-1, -2)
+                qp = torch.arange(start, end, device=q.device)
+                kp = torch.arange(lo, hi, device=q.device)
+                allowed = (qp[:, None] - kp[None, :]).abs() <= radius
+                weights = weights * allowed[None, None]
+                den = weights.sum(-1, keepdim=True).clamp_min(1e-6)
+                outputs.append((weights / den) @ vf[:, :, lo:hi])
+            return torch.cat(outputs, dim=2) * mask
         memory = torch.einsum("bhtr,bhtd->bhrd", kf, vf)
         z = kf.sum(dim=2)
         num = torch.einsum("bhtr,bhrd->bhtd", qf, memory)
@@ -225,7 +274,7 @@ class MemoryFusionV3Attention(BaseLayaReplacementAttention):
         return self.finish(out, hidden_states)
 
     def enable_memory_refinement(self):
-        if not self.memory_enabled:
+        if not self.memory_enabled and self.sliding_window is None:
             self.memory_enabled = True
             with torch.no_grad():
                 self.fusion_bias[:, 3:].fill_(-1.5)
@@ -265,14 +314,15 @@ class MemoryFusionV3Attention(BaseLayaReplacementAttention):
             memory_rank=self.memory_rank,
             dilations=list(self.dilations),
             local_branch="symmetric_qkv_sparse_softmax",
-            global_branch="bidirectional_full_sequence_hedgehog",
+            global_branch=("bidirectional_window_hedgehog" if self.sliding_window is not None else "bidirectional_full_sequence_hedgehog"),
             memory_branches=["gdn2_forward", "gdn2_backward"],
             branches=["symmetric_local", "full_hedgehog", "direct_v", "gdn2_forward", "gdn2_backward"],
             fusion_prior_fast=[1.20, 0.60, 0.20, -4.0, -4.0],
             fusion_prior_memory=[1.20, 0.60, 0.20, -1.5, -1.5],
             memory_enabled=self.memory_enabled,
             train_output_projection=True,
-            supported_attention_type="full_attention",
+            supported_attention_type=("sliding_attention" if self.sliding_window is not None else "full_attention"),
+            sliding_window=self.sliding_window,
         )
         return d
 
@@ -283,6 +333,9 @@ class LayaMemoryFusionV3Config:
     seed: int = 2026
     output_dir: str = "/content/laya_tinycenn"
     candidate_layer: int = 12
+    target_all_attention: bool = False
+    target_layers: tuple[int, ...] | None = None
+    enable_recurrent_memory: bool = False
     feature_dim: int = 64
     memory_rank: int = 64
     dilations: tuple[int, ...] = (1, 2, 4, 8, 16, 32, 64)
@@ -319,6 +372,16 @@ class LayaMemoryFusionV3Config:
     action_kl_weight: float = 0.01
     distill_temperature: float = 1.0
     cache_on_device: bool = True
+
+
+def _tree_bytes(x):
+    if torch.is_tensor(x):
+        return x.numel() * x.element_size()
+    if isinstance(x, dict):
+        return sum(_tree_bytes(v) for v in x.values())
+    if isinstance(x, (tuple, list)):
+        return sum(_tree_bytes(v) for v in x)
+    return 0
 
 
 def _tree_detach_cpu(x):
@@ -561,25 +624,15 @@ def _train_functional_round(
         probe = _probe_metrics(replacement, probe_cache, device, dtype)
         probe.update(step=step, round=round_idx)
         score = probe["nmse"] + cfg.cosine_weight * (1.0 - probe["cosine"])
-        improved = score < best_score - 0.001
-        if improved:
+        significant_improvement = score < best_score - 0.001
+        if score < best_score:
             best, best_score = probe, score
             best_state = _state_cpu(replacement)
-            stale_checks = 0
-        else:
-            stale_checks += 1
+        stale_checks = 0 if significant_improvement else stale_checks + 1
         print(
             f"  PROBE: NMSE={probe['nmse']:.4f} cos={probe['cosine']:.4f} "
             f"best={best['nmse']:.4f}/{best['cosine']:.4f}"
         )
-
-        if (
-            not replacement.memory_enabled
-            and probe["nmse"] <= cfg.memory_enable_nmse
-            and probe["cosine"] >= cfg.memory_enable_cosine
-        ):
-            replacement.enable_memory_refinement()
-            stale_checks = 0
 
         if (
             probe["nmse"] <= cfg.max_local_nmse
@@ -589,6 +642,16 @@ def _train_functional_round(
             replacement.load_state_dict(best_state)
             replacement.eval()
             return best, True
+
+        if (
+            cfg.enable_recurrent_memory
+            and replacement.sliding_window is None
+            and not replacement.memory_enabled
+            and probe["nmse"] <= cfg.memory_enable_nmse
+            and probe["cosine"] >= cfg.memory_enable_cosine
+        ):
+            replacement.enable_memory_refinement()
+            stale_checks = 0
 
         if stale_checks >= 3 and lr_cuts < 2:
             for group in opt.param_groups:
@@ -775,6 +838,24 @@ def _demo_and_latency(teacher, student):
     )
 
 
+def _candidate_layers(model, cfg):
+    layers = model.encoder.layers
+    if cfg.target_all_attention and cfg.target_layers is not None:
+        raise ValueError("Choose target_all_attention or target_layers, not both")
+    if cfg.target_all_attention:
+        candidates = list(range(len(layers)))
+    elif cfg.target_layers is not None:
+        candidates = list(dict.fromkeys(cfg.target_layers))
+    else:
+        candidates = [cfg.candidate_layer]
+    if not candidates or any(not isinstance(i, int) or not 0 <= i < len(layers) for i in candidates):
+        raise ValueError(f"Invalid candidate layers: {candidates}")
+    for i in candidates:
+        if str(layers[i].attention_type) not in {"full_attention", "sliding_attention"}:
+            raise ValueError(f"Unsupported attention type at layer {i}: {layers[i].attention_type}")
+    return candidates
+
+
 def run_memory_fusion_v3(cfg: LayaMemoryFusionV3Config):
     random.seed(cfg.seed)
     np.random.seed(cfg.seed)
@@ -799,14 +880,7 @@ def run_memory_fusion_v3(cfg: LayaMemoryFusionV3Config):
     student = copy.copy(teacher)
     student.model = copy.deepcopy(teacher.model).eval().requires_grad_(False)
 
-    idx = int(cfg.candidate_layer)
-    if not 0 <= idx < len(student.model.encoder.layers):
-        raise ValueError(f"invalid candidate layer {idx}")
-    attention_type = str(student.model.encoder.layers[idx].attention_type)
-    if attention_type != "full_attention":
-        raise ValueError(
-            f"MemoryFusionV3 requires full_attention; layer {idx} is {attention_type}"
-        )
+    candidates = _candidate_layers(student.model, cfg)
 
     train_ds = _load_typed_split("train")
     test_ds = _load_typed_split("test")
@@ -821,7 +895,7 @@ def run_memory_fusion_v3(cfg: LayaMemoryFusionV3Config):
         "Gate workflows:",
         {k: v["n"] for k, v in teacher_gate["by_workflow"].items()},
     )
-    print(f"Candidate: layer {idx} ({attention_type})")
+    print("Candidate layers:", candidates)
 
     items = build_training_items(
         teacher, train_rows, cfg.train_cases, cfg.train_max_len, cfg.seed
@@ -834,130 +908,157 @@ def run_memory_fusion_v3(cfg: LayaMemoryFusionV3Config):
             f"need at least {needed} training items for the configured caches; got {len(items)}"
         )
 
-    train_cache = _build_teacher_cache(
-        teacher, idx, items,
-        batches=cfg.train_cache_batches,
-        batch_size=cfg.batch_size,
-        offset=0,
-        label="train",
-    )
-    probe_offset = cfg.train_cache_batches * cfg.batch_size
-    probe_cache = _build_teacher_cache(
-        teacher, idx, items,
-        batches=cfg.probe_cache_batches,
-        batch_size=cfg.batch_size,
-        offset=probe_offset,
-        label="probe",
-    )
-
-    if cfg.cache_on_device and teacher.device.type == "cuda":
-        def _move_cache(cache):
-            moved = []
-            for entry in cache:
-                moved.append({
-                    "x": entry["x"].to(teacher.device),
-                    "y": entry["y"].to(teacher.device),
-                    "pos": _tree_to(entry["pos"], teacher.device),
-                    "mask": _tree_to(entry["mask"], teacher.device),
-                    "valid": entry["valid"].to(teacher.device),
-                })
-            return moved
-        train_cache = _move_cache(train_cache)
-        probe_cache = _move_cache(probe_cache)
-        print("Teacher I/O cache moved to GPU for zero-copy functional fitting.")
-
-    original = student.model.encoder.layers[idx].attn
-    replacement = MemoryFusionV3Attention(
-        teacher.model.encoder.layers[idx].attn,
-        cfg.feature_dim,
-        cfg.memory_rank,
-        cfg.dilations,
-    ).to(student.device)
-    proj_dtype = teacher.model.encoder.layers[idx].attn.Wqkv.weight.dtype
-    replacement.Wqkv.to(device=student.device, dtype=proj_dtype)
-    replacement.Wo.to(device=student.device, dtype=proj_dtype)
-    student.model.encoder.layers[idx].attn = replacement
-
     history = []
-    accepted = False
-    gate = checks = drop = None
-    for round_idx in range(1, cfg.max_rounds + 1):
-        print(f"\n=== V3 layer {idx}: functional round {round_idx}/{cfg.max_rounds} ===")
-        local, local_pass = _train_functional_round(
-            replacement, train_cache, probe_cache, cfg,
-            teacher.device, teacher.dtype, round_idx
+    for idx in candidates:
+        print(f"\n=== Candidate layer {idx}: {student.model.encoder.layers[idx].attention_type} ===")
+        train_cache = _build_teacher_cache(
+            teacher, idx, items,
+            batches=cfg.train_cache_batches,
+            batch_size=cfg.batch_size,
+            offset=0,
+            label="train",
         )
-        history.append({
-            "layer": idx,
-            "round": round_idx,
-            "stage": "functional",
-            "local": local,
-            "local_pass": local_pass,
-        })
-        torch.save({
-            "layer": idx,
-            "round": round_idx,
-            "config": replacement.config_dict(),
-            "state_dict": _state_cpu(replacement),
-            "metrics": local,
-        }, out_dir / f"layer_{idx}_round_{round_idx}.pt")
-        print(
-            f"round {round_idx} best: NMSE={local['nmse']:.4f} "
-            f"cos={local['cosine']:.4f}"
+        probe_offset = cfg.train_cache_batches * cfg.batch_size
+        probe_cache = _build_teacher_cache(
+            teacher, idx, items,
+            batches=cfg.probe_cache_batches,
+            batch_size=cfg.batch_size,
+            offset=probe_offset,
+            label="probe",
         )
-        if not local_pass:
-            continue
 
-        print("Local gate passed; running Laya decision gate...")
-        gate = evaluate_agent(
-            student, gate_cases, teacher_agent=teacher, label="student"
+        cache_bytes = sum(
+            _tree_bytes(entry) for entry in train_cache + probe_cache
         )
-        accepted, checks, drop = _accept(local, teacher_gate, gate, cfg)
-        print(json.dumps({
-            "accepted": accepted,
-            "teacher_agreement": gate.get("teacher_agreement"),
-            "mean_teacher_kl": gate.get("mean_teacher_kl"),
-            "accuracy": gate.get("accuracy"),
-            "accuracy_drop": drop,
-            "checks": checks,
-        }, indent=2))
-        if accepted:
-            break
+        move_cache = cfg.cache_on_device and teacher.device.type == "cuda"
+        if move_cache:
+            free_bytes, _ = torch.cuda.mem_get_info(teacher.device)
+            move_cache = cache_bytes < free_bytes * 0.4
+            if not move_cache:
+                print(f"Keeping {cache_bytes / 2**20:.0f} MiB cache on CPU to leave training headroom.")
+        if move_cache:
+            def _move_cache(cache):
+                moved = []
+                for entry in cache:
+                    moved.append({
+                        "x": entry["x"].to(teacher.device),
+                        "y": entry["y"].to(teacher.device),
+                        "pos": _tree_to(entry["pos"], teacher.device),
+                        "mask": _tree_to(entry["mask"], teacher.device),
+                        "valid": entry["valid"].to(teacher.device),
+                    })
+                return moved
+            train_cache = _move_cache(train_cache)
+            probe_cache = _move_cache(probe_cache)
+            print("Teacher I/O cache moved to GPU for zero-copy functional fitting.")
 
-        if cfg.decision_refine_steps > 0:
-            print("Local gate passed but decision gate failed; short decision refinement...")
-            refined = _decision_refine(
-                teacher, student, replacement, cfg, items, train_cache,
-                probe_cache, gate_cases, teacher_gate
+        original = student.model.encoder.layers[idx].attn
+        replacement = MemoryFusionV3Attention(
+            teacher.model.encoder.layers[idx].attn,
+            cfg.feature_dim,
+            cfg.memory_rank,
+            cfg.dilations,
+        ).to(student.device)
+        proj_dtype = teacher.model.encoder.layers[idx].attn.Wqkv.weight.dtype
+        replacement.Wqkv.to(device=student.device, dtype=proj_dtype)
+        replacement.Wo.to(device=student.device, dtype=proj_dtype)
+        student.model.encoder.layers[idx].attn = replacement
+
+        accepted = False
+        gate = checks = drop = None
+        for round_idx in range(1, cfg.max_rounds + 1):
+            print(f"\n=== V3 layer {idx}: functional round {round_idx}/{cfg.max_rounds} ===")
+            local, local_pass = _train_functional_round(
+                replacement, train_cache, probe_cache, cfg,
+                teacher.device, teacher.dtype, round_idx
             )
-            if refined is not None:
-                accepted, local, gate, checks, drop = refined
-                history.append({
-                    "layer": idx,
-                    "round": round_idx,
-                    "stage": "decision_refine",
-                    "local": local,
-                    "gate": gate,
-                    "checks": checks,
-                    "accuracy_drop": drop,
-                    "accepted": accepted,
-                })
-                if accepted:
-                    break
+            history.append({
+                "layer": idx,
+                "round": round_idx,
+                "stage": "functional",
+                "local": local,
+                "local_pass": local_pass,
+            })
+            torch.save({
+                "layer": idx,
+                "round": round_idx,
+                "config": replacement.config_dict(),
+                "state_dict": _state_cpu(replacement),
+                "metrics": local,
+            }, out_dir / f"layer_{idx}_round_{round_idx}.pt")
+            print(
+                f"round {round_idx} best: NMSE={local['nmse']:.4f} "
+                f"cos={local['cosine']:.4f}"
+            )
+            if not local_pass:
+                continue
 
-    if not accepted:
-        student.model.encoder.layers[idx].attn = original
-        print(
-            f"❌ layer {idx} did not pass strict gates; original Laya attention restored."
-        )
-    else:
-        print(f"✅ accepted MemoryFusionV3 layer {idx}")
+            print("Local gate passed; running Laya decision gate...")
+            gate = evaluate_agent(
+                student, gate_cases, teacher_agent=teacher, label="student"
+            )
+            accepted, checks, drop = _accept(local, teacher_gate, gate, cfg)
+            print(json.dumps({
+                "accepted": accepted,
+                "teacher_agreement": gate.get("teacher_agreement"),
+                "mean_teacher_kl": gate.get("mean_teacher_kl"),
+                "accuracy": gate.get("accuracy"),
+                "accuracy_drop": drop,
+                "checks": checks,
+            }, indent=2))
+            history.append({
+                "layer": idx, "round": round_idx, "stage": "decision_gate",
+                "local": local, "gate": gate, "checks": checks,
+                "accuracy_drop": drop, "accepted": accepted,
+            })
+            if accepted:
+                break
+
+            if cfg.decision_refine_steps > 0:
+                print("Local gate passed but decision gate failed; short decision refinement...")
+                before_refine = _state_cpu(replacement)
+                refined = _decision_refine(
+                    teacher, student, replacement, cfg, items, train_cache,
+                    probe_cache, gate_cases, teacher_gate
+                )
+                if refined is not None:
+                    accepted, local, gate, checks, drop = refined
+                    history.append({
+                        "layer": idx,
+                        "round": round_idx,
+                        "stage": "decision_refine",
+                        "local": local,
+                        "gate": gate,
+                        "checks": checks,
+                        "accuracy_drop": drop,
+                        "accepted": accepted,
+                    })
+                    if accepted:
+                        break
+                replacement.load_state_dict(before_refine)
+
+        if not accepted:
+            student.model.encoder.layers[idx].attn = original
+            print(
+                f"❌ layer {idx} did not pass strict gates; original Laya attention restored."
+            )
+        else:
+            print(f"✅ accepted MemoryFusionV3 layer {idx}")
+
+        replacement.requires_grad_(False)
+        student.model.eval()
+        # Persist progress after every candidate, and release its I/O cache.
+        torch.save(adapter_payload(student.model, cfg, {"history": history}), out_dir / "progress.pt")
+        del train_cache, probe_cache, replacement, original
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     teacher_final = evaluate_agent(teacher, final_cases, label="teacher")
     student_final = evaluate_agent(
         student, final_cases, teacher_agent=teacher, label="memory_fusion_v3"
     )
     demo, latency = _demo_and_latency(teacher, student)
+    latency["speedup"] = latency["teacher"]["median_ms"] / max(latency["student"]["median_ms"], 1e-9)
     accepted_layers = [
         i for i, layer in enumerate(student.model.encoder.layers)
         if isinstance(layer.attn, MemoryFusionV3Attention)
@@ -966,17 +1067,22 @@ def run_memory_fusion_v3(cfg: LayaMemoryFusionV3Config):
         p.numel()
         for i in accepted_layers
         for p in student.model.encoder.layers[i].attn.parameters()
-        if p.requires_grad
     )
 
     report = {
         "architecture": "memory_fusion_v3",
-        "status": "ok" if accepted_layers else "failed_no_accepted_layers",
+        "status": ("complete" if len(accepted_layers) == len(student.model.encoder.layers)
+                   else "partial" if accepted_layers else "failed_no_accepted_layers"),
+        "all_attention_replaced": len(accepted_layers) == len(student.model.encoder.layers),
+        "all_targets_replaced": set(candidates).issubset(accepted_layers),
+        "remaining_attention_layers": [i for i in range(len(student.model.encoder.layers)) if i not in accepted_layers],
+        "gate_final_disjoint": True,
         "model_id": cfg.model_id,
         "config": asdict(cfg),
-        "candidate_layers": [idx],
+        "candidate_layers": candidates,
         "accepted_layers": accepted_layers,
-        "replacement_trainable_parameters": trainable_params,
+        "replacement_parameters": trainable_params,
+        "replacement_trainable_parameters": sum(p.numel() for p in student.model.parameters() if p.requires_grad),
         "history": history,
         "teacher_gate": teacher_gate,
         "teacher_final": teacher_final,
@@ -984,7 +1090,7 @@ def run_memory_fusion_v3(cfg: LayaMemoryFusionV3Config):
         "latency": latency,
         "demo": demo,
         "methodology": {
-            "teacher": "convaiinnovations/laya unchanged",
+            "teacher": cfg.model_id + " unchanged",
             "gate_source": "held-out typed-decisions train rows",
             "final_source": "typed-decisions official test rows",
             "teacher_cache": True,
@@ -994,14 +1100,14 @@ def run_memory_fusion_v3(cfg: LayaMemoryFusionV3Config):
         "notes": [
             "V3 is a native bidirectional design, not a forward/reverse wrapper around the causal MemoryFusion core.",
             "The local branch uses symmetric Q/K/V sparse softmax neighborhoods.",
-            "The Hedgehog branch is full-sequence and bidirectional.",
+            "The Hedgehog branch is bidirectional and bounded to the original radius for sliding layers.",
             "Forward and backward GDN2 memories use separate parameters.",
-            "Layer 12 is trained from cached teacher attention I/O for substantially faster iteration.",
+            "Each candidate is fitted from cached teacher attention I/O, then gated in the cumulative student.",
             "Fast functional fitting starts with vectorized local+Hedgehog+direct-V branches.",
             "Router/gain parameters use a higher LR than feature maps; Wo uses a conservative LR.",
             "Cosine weight increases automatically once NMSE enters the near-gate region.",
             "Cached batches are reshuffled each pass and can remain on GPU for zero-copy fitting.",
-            "Recurrent forward/backward GDN2 is activated only when the fixed probe reaches the near-gate region.",
+            "Recurrent GDN2 is opt-in for full layers only; the default uses vectorized branches.",
             "Full-model Laya decision evaluation is deferred until local fidelity passes.",
         ],
     }
