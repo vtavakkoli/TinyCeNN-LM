@@ -418,6 +418,7 @@ def _train_candidate(
     # the teacher attention shape.  This removes a full student-model pass from
     # most optimization steps.
     functional_start = max(40, int(round(steps * 0.60)))
+    scheduled_functional_start = functional_start
     check_every = max(25, steps // 14)
     min_gate_step = functional_start
     pad_id = teacher.tok.pad_token_id
@@ -579,6 +580,26 @@ def _train_candidate(
                 for k, v in replacement.state_dict().items()
             }
 
+        # If the high-LR local transfer reaches a strong approximation early,
+        # do not wait for the fixed 60% boundary: start end-to-end refinement
+        # on the next step.
+        if (
+            step < functional_start
+            and (
+                (
+                    local["nmse"] <= 0.42
+                    and local["cosine"] >= 0.78
+                )
+                or fast["teacher_student_top1_agreement"] >= 0.94
+            )
+        ):
+            functional_start = step + 1
+            min_gate_step = functional_start
+            print(
+                f"  EARLY REFINEMENT: functional distillation starts at "
+                f"step {functional_start} (scheduled {scheduled_functional_start})."
+            )
+
         ready_for_gate = (
             step >= min_gate_step
             and fast["teacher_student_top1_agreement"] >= 0.93
@@ -670,6 +691,7 @@ def _train_candidate(
             "output_learning_rate_start": output_lr_start,
             "output_learning_rate_end": output_lr_end,
             "functional_refinement_start_step": functional_start,
+            "scheduled_functional_refinement_start_step": scheduled_functional_start,
             "local_only_fraction": float(functional_start) / float(max(1, steps)),
             "decision_distillation": True,
             "train_output_projection": True,
