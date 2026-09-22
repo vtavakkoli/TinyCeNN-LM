@@ -38,9 +38,21 @@ def _score_metrics(
     output_cosine: Tensor,
     core_nmse: Tensor,
     core_cosine: Tensor,
+    architecture: str | None = None,
 ):
-    # Output fidelity remains primary. Matching the pre-Wo attention core gives
-    # the recurrent replacement a cleaner signal because Wo is frozen/shared.
+    if architecture == "integrated_memory_v22":
+        # V2.2 transfer already meets NMSE / decision-level gates on the best
+        # full-attention layers, while output direction is the remaining
+        # bottleneck. Keep the acceptance gates unchanged and optimize more
+        # directly for cosine fidelity instead of relaxing the gate.
+        return (
+            0.75 * output_nmse
+            + 1.00 * (1.0 - output_cosine)
+            + 0.35 * core_nmse
+            + 0.30 * (1.0 - core_cosine)
+        )
+
+    # Preserve the established objective for the other Laya replacements.
     return (
         output_nmse
         + 0.35 * (1.0 - output_cosine)
@@ -235,6 +247,7 @@ def train_one_replacement(
                 output_cosine,
                 core_nmse,
                 core_cosine,
+                cfg.architecture,
             )
         return (
             output_nmse,
@@ -283,6 +296,7 @@ def train_one_replacement(
                 output_cosine,
                 core_nmse,
                 core_cosine,
+                cfg.architecture,
             )
             if not torch.isfinite(loss):
                 raise RuntimeError(
