@@ -117,6 +117,11 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
         # keeping every branch active so all routes receive gradient.
         init_mix = torch.tensor([0.5, 1.5, -0.5, -1.5], dtype=torch.float32)
         self.mix_logits = nn.Parameter(init_mix[None].repeat(self.num_heads, 1))
+        # Zero-initialized token-dependent correction preserves the stable
+        # global-dominant warm start but lets each query choose its best route.
+        self.mix_gate_w = nn.Parameter(
+            torch.zeros(self.num_heads, 4, self.head_dim)
+        )
 
         self.direction_logits = nn.Parameter(torch.zeros(self.num_heads, 2))
         self.log_gain = nn.Parameter(torch.zeros(self.num_heads))
@@ -285,12 +290,20 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
         ) * mask
         direct_out = v.float() * mask
 
-        mix = torch.softmax(self.mix_logits.float(), dim=-1)
+        dynamic_mix = torch.einsum(
+            "bhtd,hkd->bhtk",
+            F.normalize(q.float(), dim=-1),
+            self.mix_gate_w.float(),
+        )
+        mix = torch.softmax(
+            self.mix_logits.float()[None, :, None, :] + dynamic_mix,
+            dim=-1,
+        )
         out = (
-            mix[:, 0][None, :, None, None] * memory_out
-            + mix[:, 1][None, :, None, None] * global_out
-            + mix[:, 2][None, :, None, None] * local_out
-            + mix[:, 3][None, :, None, None] * direct_out
+            mix[..., 0:1] * memory_out
+            + mix[..., 1:2] * global_out
+            + mix[..., 2:3] * local_out
+            + mix[..., 3:4] * direct_out
         )
         out = (
             out
@@ -312,5 +325,6 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
             global_linear_attention=True,
             global_feature_map="learned_softmax_dim_fullspace",
             effective_global_feature_dim=2 * self.feature_dim,
+            token_dependent_fusion=True,
         )
         return d
