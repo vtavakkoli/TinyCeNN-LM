@@ -11,6 +11,15 @@ The `notebooks/` directory contains the full research history. To avoid picking 
 | Stable SmolLM2 integrated-memory reference | `SmolLM2_Integrated_Memory_V3_Colab.ipynb` |
 | Tool-calling experiment | `FunctionGemma_270M_CeNN_Integrated_Memory_V2_Colab.ipynb` |
 
+## Laya / ModernBERT experiments
+
+- [Integrated Memory V2.2 on Laya](Laya_Integrated_Memory_V22_Colab.ipynb)
+- [PDelta3-GDN2-CLVR on Laya](Laya_PDelta3_GDN2_CLVR_Colab.ipynb)
+- [Memory Fusion on Laya](Laya_MemoryFusion_Colab.ipynb)
+
+All three use the same typed-decision evaluation and sequential acceptance protocol so their
+results are directly comparable. They are active experiments, not promoted model-zoo winners.
+
 ## Active, not yet promoted
 
 - [SmolLM2 nonlinear recurrent readout](SmolLM2_Nonlinear_Recurrent_Readout_Colab.ipynb) — new shared nonlinear refinement experiment.
