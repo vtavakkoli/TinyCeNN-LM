@@ -18,6 +18,21 @@ TinyCeNN-LM has grown from the original Tiny-LLM CeNN adapter into a model-repla
 | **FunctionGemma Integrated Memory V2** | Specialized tool-calling experiment | [`FunctionGemma_270M_CeNN_Integrated_Memory_V2_Colab.ipynb`](notebooks/FunctionGemma_270M_CeNN_Integrated_Memory_V2_Colab.ipynb) |
 | **Gemma 4 E2B Integrated Memory V2** | New experimental target with corrected text-checkpoint loading; not yet promoted to a validated winner | [`Gemma4_E2B_CeNN_Integrated_Memory_V2_Colab.ipynb`](notebooks/Gemma4_E2B_CeNN_Integrated_Memory_V2_Colab.ipynb) |
 
+## Laya / ModernBERT replacement lab
+
+Three Colab experiments adapt the current TinyCeNN replacement ideas to the bidirectional
+ModernBERT encoder used by `convaiinnovations/laya`. They keep Laya's tokenizer and typed
+decision head unchanged, distill replacement attention from the untouched Laya teacher, and
+accept layers sequentially using both representation fidelity and Laya decision-level gates.
+
+- [Laya Integrated Memory V2.2](notebooks/Laya_Integrated_Memory_V22_Colab.ipynb)
+- [Laya PDelta3-GDN2-CLVR](notebooks/Laya_PDelta3_GDN2_CLVR_Colab.ipynb)
+- [Laya Memory Fusion](notebooks/Laya_MemoryFusion_Colab.ipynb)
+
+These are new encoder experiments, not yet validated winners. The PDelta3 implementation is a
+bidirectional forward/reverse adaptation rather than a claim that the causal-LM recurrence can be
+transferred unchanged.
+
 ## Active experiments, not headline models
 
 The Qwen3.5 MemoryFusion and PDelta3 notebooks, and the Gemma 4 Integrated Memory V2/PDelta3 notebooks, are active research. They stay in the repository because their results are useful, but an incomplete strict-gate run must not be presented as proof that the adapted model is better than the base model.
