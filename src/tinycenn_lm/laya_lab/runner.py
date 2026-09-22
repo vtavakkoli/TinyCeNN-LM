@@ -150,8 +150,7 @@ def run_experiment(cfg: LayaLabConfig):
     (out_dir / "report.json").write_text(
         json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    print("
-Accepted layers:", report["accepted_layers"])
+    print("\nAccepted layers:", report["accepted_layers"])
     print("Final student metrics:")
     print(json.dumps(student_final, indent=2))
     print("Latency:", json.dumps(latency, indent=2))
