@@ -37,14 +37,39 @@ class LayaLabConfig:
     output_dir: str = "/content/laya_tinycenn"
 
     def mode_settings(self) -> dict[str, int]:
-        modes = {
-            "smoke": dict(train_cases=24, gate_cases=12, final_cases=40, steps=30,
-                          batch_size=2, train_max_len=192, max_candidates=1),
-            "balanced": dict(train_cases=160, gate_cases=60, final_cases=160, steps=160,
-                             batch_size=3, train_max_len=320, max_candidates=4),
-            "extended": dict(train_cases=600, gate_cases=160, final_cases=400, steps=400,
-                             batch_size=4, train_max_len=512, max_candidates=8),
-        }
+        if self.architecture == "integrated_memory_v22":
+            # Learned attention transfer needs substantially more question-level
+            # sequences than the old 160-step run.  Keep these budgets local to
+            # Integrated Memory so PDelta3/MemoryFusion retain their schedules.
+            modes = {
+                "smoke": dict(
+                    train_cases=40, gate_cases=20, final_cases=40, steps=60,
+                    batch_size=2, train_max_len=256, max_candidates=1,
+                ),
+                "balanced": dict(
+                    train_cases=400, gate_cases=80, final_cases=200, steps=600,
+                    batch_size=4, train_max_len=512, max_candidates=4,
+                ),
+                "extended": dict(
+                    train_cases=1000, gate_cases=200, final_cases=400, steps=1600,
+                    batch_size=4, train_max_len=768, max_candidates=6,
+                ),
+            }
+        else:
+            modes = {
+                "smoke": dict(
+                    train_cases=24, gate_cases=12, final_cases=40, steps=30,
+                    batch_size=2, train_max_len=192, max_candidates=1,
+                ),
+                "balanced": dict(
+                    train_cases=160, gate_cases=60, final_cases=160, steps=160,
+                    batch_size=3, train_max_len=320, max_candidates=4,
+                ),
+                "extended": dict(
+                    train_cases=600, gate_cases=160, final_cases=400, steps=400,
+                    batch_size=4, train_max_len=512, max_candidates=8,
+                ),
+            }
         if self.mode not in modes:
             raise ValueError(f"mode must be one of {sorted(modes)}")
         return modes[self.mode]
