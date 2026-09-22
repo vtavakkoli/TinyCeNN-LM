@@ -68,6 +68,7 @@ def train_one_replacement(teacher_agent, layer_idx: int, cfg: LayaLabConfig,
             if "y" not in capture:
                 raise RuntimeError("ModernBERT attention hook did not capture the teacher target")
             replacement.train()
+            replacement.out_drop.eval()  # match the teacher's eval-mode dropout behavior
             opt.zero_grad(set_to_none=True)
             pred, _ = replacement(
                 capture["x"], position_embeddings=capture["pos"], attention_mask=capture["mask"]
