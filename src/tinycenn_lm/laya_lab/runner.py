@@ -50,8 +50,7 @@ def run_experiment(cfg: LayaLabConfig):
     history = []
     for idx in candidates:
         print(
-            f"
-=== {cfg.architecture}: layer {idx} "
+            f"\n=== {cfg.architecture}: layer {idx} "
             f"({student.model.encoder.layers[idx].attention_type}) ==="
         )
         replacement, local = train_one_replacement(
