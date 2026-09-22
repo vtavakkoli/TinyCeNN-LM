@@ -69,8 +69,8 @@ class LayaLabConfig:
                     batch_size=1, train_max_len=256, max_candidates=1,
                 ),
                 "balanced": dict(
-                    train_cases=320, gate_cases=80, final_cases=200, steps=350,
-                    batch_size=2, train_max_len=384, max_candidates=2,
+                    train_cases=180, gate_cases=80, final_cases=200, steps=350,
+                    batch_size=2, train_max_len=320, max_candidates=2,
                 ),
                 "extended": dict(
                     train_cases=600, gate_cases=160, final_cases=400, steps=700,
