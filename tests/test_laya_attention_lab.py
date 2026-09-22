@@ -8,6 +8,7 @@ from tinycenn_lm.laya_lab import (
 )
 from tinycenn_lm.laya_lab.core import LayaLabConfig
 from tinycenn_lm.laya_lab.factory import choose_candidate_layers
+from tinycenn_lm.laya_lab.train import _score_metrics
 
 
 class DummyConfig:
@@ -138,3 +139,39 @@ def test_pdelta3_gdn2_clvr_shape_and_finite():
             local_kernel=3,
         )
     )
+
+
+def test_integrated_memory_v22_cosine_heavy_transfer_objective():
+    output_nmse = torch.tensor(0.24)
+    output_cosine = torch.tensor(0.85)
+    core_nmse = torch.tensor(0.20)
+    core_cosine = torch.tensor(0.89)
+    score = _score_metrics(
+        output_nmse,
+        output_cosine,
+        core_nmse,
+        core_cosine,
+        "integrated_memory_v22",
+    )
+    expected = (
+        0.75 * output_nmse
+        + 1.00 * (1.0 - output_cosine)
+        + 0.35 * core_nmse
+        + 0.30 * (1.0 - core_cosine)
+    )
+    assert torch.allclose(score, expected)
+
+
+def test_laya_config_records_explicit_target_layer():
+    cfg = LayaLabConfig(
+        architecture="integrated_memory_v22",
+        mode="extended",
+        target_layers=(18,),
+        feature_dim=128,
+        learning_rate=4e-4,
+        weight_decay=1e-4,
+        training_steps=2400,
+    )
+    assert cfg.target_layers == (18,)
+    assert cfg.feature_dim == 128
+    assert cfg.training_steps == 2400
