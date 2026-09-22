@@ -175,3 +175,21 @@ def test_laya_config_records_explicit_target_layer():
     assert cfg.target_layers == (18,)
     assert cfg.feature_dim == 128
     assert cfg.training_steps == 2400
+
+
+def test_laya_config_supports_all_full_attention_fast_schedule():
+    cfg = LayaLabConfig(
+        architecture="integrated_memory_v22",
+        mode="extended",
+        target_all_full_attention=True,
+        feature_dim=128,
+        learning_rate=1e-2,
+        weight_decay=1e-4,
+        training_steps=1200,
+        early_stop_local=True,
+    )
+    assert cfg.target_all_full_attention is True
+    assert cfg.target_layers is None
+    assert cfg.learning_rate == 1e-2
+    assert cfg.training_steps == 1200
+    assert cfg.early_stop_local is True

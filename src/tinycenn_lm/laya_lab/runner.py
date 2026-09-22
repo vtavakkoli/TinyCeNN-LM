@@ -56,7 +56,33 @@ def run_experiment(cfg: LayaLabConfig):
     teacher_gate = evaluate_agent(teacher, gate_cases, label="teacher")
     print("Teacher gate accuracy:", round(teacher_gate["accuracy"], 4))
 
-    if cfg.target_layers:
+    if cfg.target_layers and cfg.target_all_full_attention:
+        raise ValueError(
+            "Use either target_layers or target_all_full_attention, not both"
+        )
+
+    if cfg.target_all_full_attention:
+        if cfg.architecture != "integrated_memory_v22":
+            raise ValueError(
+                "target_all_full_attention is currently supported only for "
+                "integrated_memory_v22"
+            )
+        full_layers = [
+            i for i, layer in enumerate(student.model.encoder.layers)
+            if str(layer.attention_type) == "full_attention"
+        ]
+        # Start with the layers that already showed the strongest transfer
+        # behavior, then cover every remaining full-attention block.
+        empirical_priority = [18, 21, 6, 12, 15, 9]
+        candidates = [i for i in empirical_priority if i in full_layers]
+        center = (len(student.model.encoder.layers) - 1) / 2.0
+        candidates.extend(
+            sorted(
+                (i for i in full_layers if i not in candidates),
+                key=lambda i: abs(i - center),
+            )
+        )
+    elif cfg.target_layers:
         n_layers = len(student.model.encoder.layers)
         candidates = list(dict.fromkeys(int(i) for i in cfg.target_layers))
         invalid = [i for i in candidates if i < 0 or i >= n_layers]
@@ -184,6 +210,13 @@ def run_experiment(cfg: LayaLabConfig):
         "model_id": cfg.model_id,
         "mode": cfg.mode,
         "candidate_layers": candidates,
+        "target_policy": (
+            "all_full_attention"
+            if cfg.target_all_full_attention
+            else "explicit_layers"
+            if cfg.target_layers
+            else "auto_shortlist"
+        ),
         "accepted_layers": replaced_layers(student.model),
         "replacement_trainable_parameters": replacement_parameters(student.model),
         "training_steps_per_candidate": train_steps,

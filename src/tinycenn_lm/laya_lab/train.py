@@ -257,7 +257,17 @@ def train_one_replacement(
             score,
         )
 
-    eval_every = max(10, steps // 10)
+    # With the validated 1e-2 LR, V2.2 can cross the strict local gates much
+    # earlier than the old low-LR schedule. Probe more frequently and stop only
+    # after two consecutive strong-margin probe passes. The best checkpoint is
+    # still selected from the fixed held-out probe.
+    eval_every = (
+        max(50, steps // 12)
+        if cfg.architecture == "integrated_memory_v22"
+        else max(10, steps // 10)
+    )
+    strong_probe_streak = 0
+    stopped_early = False
 
     try:
         for step in range(steps):
@@ -348,6 +358,28 @@ def train_one_replacement(
                         f"val_cos={float(val_cosine.detach()):.4f} "
                         f"val_core_nmse={float(val_core_nmse.detach()):.4f}"
                     )
+
+                if (
+                    cfg.architecture == "integrated_memory_v22"
+                    and cfg.early_stop_local
+                    and (step + 1) >= min(400, steps)
+                ):
+                    strong_local = (
+                        float(val_nmse.detach()) <= 0.20
+                        and float(val_cosine.detach()) >= 0.90
+                        and float(val_core_nmse.detach()) <= 0.20
+                        and float(val_core_cosine.detach()) >= 0.90
+                    )
+                    strong_probe_streak = strong_probe_streak + 1 if strong_local else 0
+                    if strong_probe_streak >= 2:
+                        stopped_early = True
+                        if verbose:
+                            print(
+                                f"layer={layer_idx:02d} early-stop at step "
+                                f"{step + 1}: strong local fidelity held for "
+                                "two consecutive probes"
+                            )
+                        break
     finally:
         h1.remove()
         h2.remove()
@@ -355,5 +387,8 @@ def train_one_replacement(
 
     if best_state is not None:
         replacement.load_state_dict(best_state)
+    if "step" in best_metrics:
+        best_metrics["stopped_early"] = stopped_early
+        best_metrics["max_steps"] = steps
     replacement.eval()
     return replacement, best_metrics
