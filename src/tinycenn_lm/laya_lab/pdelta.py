@@ -44,6 +44,17 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
             _orthogonal_maps(self.num_heads, self.feature_dim, self.head_dim)
         )
 
+        # A second learned positive feature map supplies true bidirectional
+        # global token mixing in O(T) memory/time.  The recurrent GDN2 path is
+        # retained, but no longer has to imitate full softmax attention alone.
+        global_init = _orthogonal_maps(
+            self.num_heads, self.feature_dim, self.head_dim
+        )
+        self.global_wq = nn.Parameter(global_init.clone())
+        self.global_wk = nn.Parameter(global_init.clone())
+        self.global_log_scale = nn.Parameter(torch.zeros(self.num_heads))
+        self.global_input_scale = float(self.head_dim ** -0.25)
+
         self.decay_w = nn.Parameter(
             torch.zeros(self.num_heads, self.feature_dim, self.head_dim)
         )
@@ -101,7 +112,10 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
                 self.num_heads, self.head_dim, self.local_kernel, causal=False
             )
         )
-        init_mix = torch.tensor([0.0, 0.15, 0.35], dtype=torch.float32)
+        # [GDN2 recurrent, learned global kernel, local convolution, direct V].
+        # Start global-dominant for full-attention ModernBERT layers while
+        # keeping every branch active so all routes receive gradient.
+        init_mix = torch.tensor([0.5, 1.5, -0.5, -1.5], dtype=torch.float32)
         self.mix_logits = nn.Parameter(init_mix[None].repeat(self.num_heads, 1))
 
         self.direction_logits = nn.Parameter(torch.zeros(self.num_heads, 2))
@@ -110,6 +124,44 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
     def _project(self, x: Tensor, w: Tensor, bias: Tensor | None = None):
         y = torch.einsum("bhtd,hfd->bhtf", x.float(), w.float())
         return y if bias is None else y + bias[None, :, None, :]
+
+    def _global_linear(
+        self,
+        q: Tensor,
+        k: Tensor,
+        v: Tensor,
+        mask: Tensor,
+    ):
+        """Learned positive-feature approximation of bidirectional attention."""
+        scale = self.global_log_scale.float().clamp(-1.5, 1.5).exp()
+        qz = torch.einsum(
+            "bhtd,hfd->bhtf", q.float(), self.global_wq.float()
+        )
+        kz = torch.einsum(
+            "bhtd,hfd->bhtf", k.float(), self.global_wk.float()
+        )
+        qz = qz * self.global_input_scale * scale[None, :, None, None]
+        kz = kz * self.global_input_scale * scale[None, :, None, None]
+
+        # Full-space positive map gives a much closer softmax-kernel warm start
+        # than unrelated signed random features.
+        qf = torch.cat(
+            (torch.softmax(qz, dim=-1), torch.softmax(-qz, dim=-1)),
+            dim=-1,
+        ).clamp_min(1e-6)
+        kf = torch.cat(
+            (torch.softmax(kz, dim=-1), torch.softmax(-kz, dim=-1)),
+            dim=-1,
+        ).clamp_min(1e-6) * mask
+
+        vf = v.float() * mask
+        memory = torch.einsum("bhtf,bhtd->bhfd", kf, vf)
+        normalizer = kf.sum(dim=2)
+        numerator = torch.einsum("bhtf,bhfd->bhtd", qf, memory)
+        denominator = torch.einsum(
+            "bhtf,bhf->bht", qf, normalizer
+        ).unsqueeze(-1)
+        return numerator / denominator.clamp_min(1e-6)
 
     def _scan(
         self,
@@ -226,6 +278,7 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
             direction[:, 0][None, :, None, None] * fwd
             + direction[:, 1][None, :, None, None] * rev
         )
+        global_out = self._global_linear(q, k, v, mask) * mask
 
         local_out = _depthwise_sequence_conv(
             v.float(), self.local_weight, causal=False
@@ -235,8 +288,9 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
         mix = torch.softmax(self.mix_logits.float(), dim=-1)
         out = (
             mix[:, 0][None, :, None, None] * memory_out
-            + mix[:, 1][None, :, None, None] * local_out
-            + mix[:, 2][None, :, None, None] * direct_out
+            + mix[:, 1][None, :, None, None] * global_out
+            + mix[:, 2][None, :, None, None] * local_out
+            + mix[:, 3][None, :, None, None] * direct_out
         )
         out = (
             out
@@ -255,5 +309,8 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
             bidirectional=True,
             clvr_source="previous_encoder_representation",
             local_value_residual=True,
+            global_linear_attention=True,
+            global_feature_map="learned_softmax_dim_fullspace",
+            effective_global_feature_dim=2 * self.feature_dim,
         )
         return d
