@@ -272,7 +272,10 @@ def _train_candidate(
 
     proj_dtype = teacher.model.encoder.layers[layer_idx].attn.Wqkv.weight.dtype
     replacement.Wqkv.to(device=student.device, dtype=proj_dtype)
-    replacement.Wo.to(device=student.device, dtype=proj_dtype)
+    # Keep a FP32 master copy for the very low-LR Wo calibration.  Autocast
+    # still executes the projection efficiently while AdamW updates retain
+    # enough numerical resolution.
+    replacement.Wo.to(device=student.device, dtype=torch.float32)
     layer.attn = replacement
 
     # Freeze the complete decision model.  Only the new PDelta3 core and a
