@@ -148,6 +148,7 @@ class CeNNMixerV4(nn.Module):
         nn.init.zeros_(self.beta_proj.weight)
         nn.init.constant_(self.beta_proj.bias,0.0)
         nn.init.zeros_(self.decay_proj.weight)
+        nn.init.zeros_(self.decay_proj.bias)
         nn.init.normal_(self.z_proj.weight,std=0.01)
         nn.init.normal_(self.assoc_out.weight,std=0.008)
 
@@ -241,6 +242,8 @@ class CeNNMixerV4(nn.Module):
 
     def forward(self,hidden_states:Tensor,*,streaming=False):
         B,T,_=hidden_states.shape
+        if T == 0:
+            raise ValueError("CeNNMixerV4 requires at least one token")
         dev=hidden_states.device
         G,D=self.cfg.groups,self.cfg.cell_dim
         Hh,dk,dv=self.cfg.assoc_heads,self.cfg.key_dim,self.cfg.value_dim
@@ -282,7 +285,8 @@ class CeNNMixerV4(nn.Module):
             self._stream_fast=sf.detach(); self._stream_mid=sm.detach(); self._stream_slow=ss.detach()
             self._stream_assoc=assoc.detach()
             if not reuse and self.cfg.conv_kernel>1:
-                self._stream_conv=proj[:,-(self.cfg.conv_kernel-1):].detach()
+                history=torch.cat((conv_buf,proj),dim=1)
+                self._stream_conv=history[:,-(self.cfg.conv_kernel-1):].detach()
             elif not reuse:
                 self._stream_conv=conv_buf.detach()
             else:

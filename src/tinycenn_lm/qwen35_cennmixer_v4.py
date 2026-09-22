@@ -35,8 +35,8 @@ class ProgressiveCeNNMixerV4(nn.Module):
         self.alpha.fill_(float(alpha))
 
     def forward(self,hidden_states:Tensor,*args,**kwargs):
-        with torch.no_grad():
-            original_result=self.original(hidden_states,*args,**kwargs)
+        # Frozen weights still need input gradients from earlier converted layers.
+        original_result=self.original(hidden_states,*args,**kwargs)
         original_y=_primary(original_result)
 
         streaming=kwargs.get("cache_params") is not None or kwargs.get("past_key_values") is not None
