@@ -482,10 +482,7 @@ def run_memory_fusion_v2(cfg: LayaMemoryFusionV2Config):
 
     history, offset_steps = [], 0
     for idx in candidates:
-        print(f"
-{'='*88}
-MemoryFusionV2 layer {idx}
-{'='*88}")
+        print(f"\n{'='*88}\nMemoryFusionV2 layer {idx}\n{'='*88}")
         layer = student.model.encoder.layers[idx]
         original = layer.attn
         replacement = MemoryFusionV2Attention(
@@ -499,8 +496,7 @@ MemoryFusionV2 layer {idx}
         accepted = False
 
         for round_idx in range(1, cfg.max_rounds + 1):
-            print(f"
---- layer {idx} round {round_idx}/{cfg.max_rounds} ---")
+            print(f"\n--- layer {idx} round {round_idx}/{cfg.max_rounds} ---")
             result = _train_round(
                 teacher, student, replacement, idx, cfg, train_items,
                 probe_batch, gate_cases, teacher_gate, round_idx, offset_steps
@@ -570,8 +566,7 @@ MemoryFusionV2 layer {idx}
     (out_dir / "report.json").write_text(
         json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    print("
-Accepted layers:", accepted_layers)
+    print("\nAccepted layers:", accepted_layers)
     print("Final student metrics:")
     print(json.dumps(student_final, indent=2))
     print("Latency:", json.dumps(latency, indent=2))
