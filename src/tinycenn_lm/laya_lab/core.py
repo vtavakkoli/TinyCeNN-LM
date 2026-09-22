@@ -27,6 +27,7 @@ class LayaLabConfig:
     pdelta_conv_kernel: int = 4
     pdelta_chunk_size: int = 32
     learning_rate: float = 3e-4
+    final_learning_rate: float | None = None
     weight_decay: float = 1e-3
     training_steps: int | None = None
     target_layers: tuple[int, ...] | None = None
@@ -68,11 +69,11 @@ class LayaLabConfig:
                     batch_size=1, train_max_len=256, max_candidates=1,
                 ),
                 "balanced": dict(
-                    train_cases=400, gate_cases=80, final_cases=200, steps=900,
+                    train_cases=320, gate_cases=80, final_cases=200, steps=350,
                     batch_size=2, train_max_len=384, max_candidates=2,
                 ),
                 "extended": dict(
-                    train_cases=800, gate_cases=160, final_cases=400, steps=1600,
+                    train_cases=600, gate_cases=160, final_cases=400, steps=700,
                     batch_size=2, train_max_len=512, max_candidates=2,
                 ),
             }
