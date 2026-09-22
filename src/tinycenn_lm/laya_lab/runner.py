@@ -51,11 +51,20 @@ def run_experiment(cfg: LayaLabConfig):
     teacher_gate = evaluate_agent(teacher, gate_cases, label="teacher")
     print("Teacher gate accuracy:", round(teacher_gate["accuracy"], 4))
 
-    candidates = choose_candidate_layers(student.model, settings["max_candidates"])
-    if cfg.architecture in {"pdelta3_gdn2_clvr", "integrated_memory_v22"}:
-        # Both are global bidirectional replacements. Full-attention layers are
-        # the closer structural match; sliding attention has a per-query window
-        # topology that the global memory kernel intentionally does not model.
+    if cfg.architecture == "integrated_memory_v22":
+        candidates = choose_candidate_layers(
+            student.model,
+            settings["max_candidates"],
+            preferred_attention_type="full_attention",
+        )
+    else:
+        candidates = choose_candidate_layers(
+            student.model,
+            settings["max_candidates"],
+        )
+    if cfg.architecture == "pdelta3_gdn2_clvr":
+        # PDelta3 keeps its existing mixed shortlist but tries full-attention
+        # candidates first.
         candidates.sort(key=lambda i: (
             0 if str(student.model.encoder.layers[i].attention_type) == "full_attention" else 1,
             abs(i - (len(student.model.encoder.layers) - 1) / 2.0),
