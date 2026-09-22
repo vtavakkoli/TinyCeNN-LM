@@ -35,15 +35,30 @@ def run_experiment(cfg: LayaLabConfig):
 
     train_ds = _load_typed_split("train")
     test_ds = _load_typed_split("test")
+    model_max_len = int(teacher.cfg.get("max_len", settings["train_max_len"]))
+    train_max_len = min(int(settings["train_max_len"]), model_max_len)
     train_items = build_training_items(
-        teacher, train_ds, settings["train_cases"], settings["train_max_len"], cfg.seed
+        teacher, train_ds, settings["train_cases"], train_max_len, cfg.seed
+    )
+    print(
+        "Attention-transfer sequences:",
+        len(train_items),
+        "| train max length:",
+        train_max_len,
     )
     gate_cases = dataset_cases(test_ds, settings["gate_cases"])
     final_cases = dataset_cases(test_ds, settings["final_cases"])
     teacher_gate = evaluate_agent(teacher, gate_cases, label="teacher")
     print("Teacher gate accuracy:", round(teacher_gate["accuracy"], 4))
 
-    candidates = choose_candidate_layers(student.model, settings["max_candidates"])
+    preferred_type = (
+        "full_attention" if cfg.architecture == "integrated_memory_v22" else None
+    )
+    candidates = choose_candidate_layers(
+        student.model,
+        settings["max_candidates"],
+        preferred_attention_type=preferred_type,
+    )
     print("Candidate ModernBERT layers:", [
         (i, student.model.encoder.layers[i].attention_type) for i in candidates
     ])
@@ -142,8 +157,9 @@ def run_experiment(cfg: LayaLabConfig):
         "latency": latency,
         "demo": demo,
         "note": (
-            "PDelta3 is a bidirectional encoder adaptation; these Laya results are "
-            "not interchangeable with causal-LM results."
+            "Laya uses a bidirectional ModernBERT encoder. Integrated Memory V2.2 "
+            "uses learned attention transfer on full-attention layers first; "
+            "results are not interchangeable with causal-LM conversions."
         ),
     }
     torch.save(adapter_payload(student.model, cfg, report), out_dir / "adapter.pt")
