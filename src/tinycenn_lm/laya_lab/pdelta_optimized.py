@@ -132,13 +132,56 @@ def _student_forward_capture(student, layer_idx, batch, grad: bool):
 
 
 @torch.no_grad()
-def _teacher_forward(teacher, batch):
-    with torch.autocast(
-        device_type=teacher.device.type,
-        dtype=teacher.dtype,
-        enabled=teacher.device.type == "cuda",
-    ):
-        return teacher.model(*_args(batch, teacher.device))
+def _teacher_forward_capture(teacher, layer_idx, batch):
+    """One teacher forward: logits + candidate-layer input/output/core target."""
+    capture: dict[str, Any] = {}
+    attn = teacher.model.encoder.layers[layer_idx].attn
+
+    def pre_hook(module, hook_args, kwargs):
+        x = hook_args[0] if hook_args else kwargs["hidden_states"]
+        capture["x"] = x.detach()
+        capture["pos"] = _tree_detach(kwargs.get("position_embeddings"))
+        mask = kwargs.get("attention_mask")
+        capture["mask"] = None if mask is None else mask.detach()
+
+    def wo_pre_hook(module, hook_args):
+        if not hook_args:
+            return
+        flat = hook_args[0]
+        if flat.ndim != 3:
+            return
+        b, t, _ = flat.shape
+        h = int(attn.config.num_attention_heads)
+        d = flat.shape[-1] // h
+        capture["core"] = (
+            flat.reshape(b, t, h, d).transpose(1, 2).contiguous().detach()
+        )
+
+    def post_hook(module, hook_args, kwargs, output):
+        capture["y"] = output[0].detach()
+
+    h1 = attn.register_forward_pre_hook(pre_hook, with_kwargs=True)
+    h2 = attn.Wo.register_forward_pre_hook(wo_pre_hook)
+    h3 = attn.register_forward_hook(post_hook, with_kwargs=True)
+    try:
+        with torch.autocast(
+            device_type=teacher.device.type,
+            dtype=teacher.dtype,
+            enabled=teacher.device.type == "cuda",
+        ):
+            out = teacher.model(*_args(batch, teacher.device))
+    finally:
+        h1.remove()
+        h2.remove()
+        h3.remove()
+
+    required = ("x", "y", "core")
+    if any(k not in capture for k in required):
+        raise RuntimeError(
+            f"failed to capture teacher layer {layer_idx}: "
+            f"missing {[k for k in required if k not in capture]}"
+        )
+    return capture, out
 
 
 @torch.no_grad()
@@ -210,14 +253,39 @@ def _stratified_disjoint_cases(ds, gate_count, final_count, seed):
 
 
 @torch.no_grad()
-def _probe_local(teacher, student, layer_idx, probe_batch):
-    cap, _ = _student_forward_capture(student, layer_idx, probe_batch, False)
-    target, target_core = _teacher_attention_target(
-        teacher, layer_idx, cap["x"], cap["pos"], cap["mask"]
+def _prepare_local_probe(teacher, layer_idx, probe_batch):
+    """Cache immutable teacher-side probe targets once per candidate."""
+    cap, _ = _teacher_forward_capture(teacher, layer_idx, probe_batch)
+    return {
+        "x": cap["x"],
+        "pos": cap["pos"],
+        "mask": cap["mask"],
+        "y": cap["y"],
+        "core": cap["core"],
+        "valid": probe_batch["attention_mask"].to(teacher.device).bool(),
+    }
+
+
+@torch.no_grad()
+def _probe_local_cached(replacement, probe, agent):
+    replacement.eval()
+    with torch.autocast(
+        device_type=agent.device.type,
+        dtype=agent.dtype,
+        enabled=agent.device.type == "cuda",
+    ):
+        pred, _ = replacement(
+            probe["x"],
+            position_embeddings=probe["pos"],
+            attention_mask=probe["mask"],
+        )
+    core_pred = replacement.last_core_output
+    if core_pred is None:
+        raise RuntimeError("replacement did not expose probe core output")
+    nmse, cosine = _local_metrics(pred, probe["y"], probe["valid"])
+    core_nmse, core_cosine = _core_metrics(
+        core_pred, probe["core"], probe["valid"]
     )
-    valid = probe_batch["attention_mask"].to(student.device).bool()
-    nmse, cosine = _local_metrics(cap["y"], target, valid)
-    core_nmse, core_cosine = _core_metrics(cap["core"], target_core, valid)
     return {
         "nmse": float(nmse.item()),
         "cosine": float(cosine.item()),
@@ -294,26 +362,46 @@ def _train_candidate(
                 p.data = p.data.float()
             core_params.append(p)
 
-    core_lr = min(float(cfg.learning_rate), 6e-4)
-    output_lr = core_lr * 0.05
+    # Restore the fast-convergence regime: start at 1e-2 and decay
+    # smoothly to 1e-3.  The previous optimized runner accidentally capped the
+    # requested LR at 6e-4, which is why 900 steps still converged very slowly.
+    core_lr_start = float(cfg.learning_rate)
+    core_lr_end = float(
+        cfg.final_learning_rate
+        if cfg.final_learning_rate is not None
+        else core_lr_start * 0.1
+    )
+    if core_lr_start <= 0 or core_lr_end <= 0:
+        raise ValueError("learning rates must be positive")
+    if core_lr_end > core_lr_start:
+        raise ValueError("final_learning_rate must be <= learning_rate")
+
+    output_lr_start = core_lr_start * 0.10
+    output_lr_end = core_lr_end * 0.10
     opt = torch.optim.AdamW(
         [
-            {"params": core_params, "lr": core_lr},
-            {"params": output_params, "lr": output_lr},
+            {"params": core_params, "lr": core_lr_start},
+            {"params": output_params, "lr": output_lr_start},
         ],
         weight_decay=cfg.weight_decay,
+        betas=(0.9, 0.95),
     )
 
-    warmup = max(10, min(60, steps // 12))
+    end_ratio = core_lr_end / core_lr_start
 
     def lr_scale(step_idx):
-        if step_idx < warmup:
-            return 0.15 + 0.85 * float(step_idx + 1) / float(warmup)
-        progress = float(step_idx - warmup) / float(max(1, steps - warmup))
+        progress = float(step_idx) / float(max(1, steps - 1))
         cosine = 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
-        return 0.08 + 0.92 * cosine
+        return end_ratio + (1.0 - end_ratio) * cosine
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_scale)
+
+    # Candidate input is identical to the teacher up to this layer, so cache
+    # fixed probe hidden states/targets once instead of rerunning full models at
+    # every diagnostic check.
+    probe_target = _prepare_local_probe(
+        teacher, layer_idx, probe_batch
+    )
 
     best_state = None
     best_score = float("inf")
@@ -325,8 +413,14 @@ def _train_candidate(
     accepted_checks = None
     accepted_drop = None
 
-    check_every = max(50, steps // 12)
-    min_gate_step = max(150, steps // 4)
+    # Stage 1 is cheap local transfer.  Stage 2 turns on the expensive
+    # full-student decision distillation only after the replacement has learned
+    # the teacher attention shape.  This removes a full student-model pass from
+    # most optimization steps.
+    functional_start = max(40, int(round(steps * 0.60)))
+    scheduled_functional_start = functional_start
+    check_every = max(25, steps // 14)
+    min_gate_step = functional_start
     pad_id = teacher.tok.pad_token_id
 
     for step in range(1, steps + 1):
@@ -339,37 +433,77 @@ def _train_candidate(
         replacement.train()
         replacement.out_drop.eval()
 
-        with torch.no_grad():
-            tlog, tact = _teacher_forward(teacher, batch)
+        # One teacher full forward captures everything needed for local transfer
+        # and, later, functional distillation.  The previous code performed an
+        # extra teacher-attention forward every step.
+        teacher_cap, (tlog, tact) = _teacher_forward_capture(
+            teacher, layer_idx, batch
+        )
 
         opt.zero_grad(set_to_none=True)
-        cap, (slog, sact) = _student_forward_capture(
-            student, layer_idx, batch, True
-        )
-        target, target_core = _teacher_attention_target(
-            teacher, layer_idx, cap["x"], cap["pos"], cap["mask"]
-        )
-
         valid = batch["attention_mask"].to(student.device).bool()
         marker_mask = batch["marker_mask"].to(student.device).bool()
-        nmse, cosine = _local_metrics(cap["y"], target, valid)
-        core_nmse, core_cosine = _core_metrics(
-            cap["core"], target_core, valid
-        )
-        decision_kl = _kl(slog, tlog, marker_mask, temperature=1.25)
-        action_kl = _kl(sact, tact, None, temperature=1.0)
-        logit_mse = _centered_logit_mse(slog, tlog, marker_mask)
+        functional = step >= functional_start
 
-        progress = float(step - 1) / float(max(1, steps - 1))
-        decision_weight = 0.50 + 1.75 * progress
+        if functional:
+            # Refinement stage: one student full forward gives both the
+            # replacement output/core and the final Laya decision logits.
+            cap, (slog, sact) = _student_forward_capture(
+                student, layer_idx, batch, True
+            )
+            pred = cap["y"]
+            core_pred = cap["core"]
+            decision_kl = _kl(
+                slog, tlog, marker_mask, temperature=1.25
+            )
+            action_kl = _kl(sact, tact, None, temperature=1.0)
+            logit_mse = _centered_logit_mse(
+                slog, tlog, marker_mask
+            )
+        else:
+            # Fast transfer stage: train only the candidate module on teacher
+            # hidden states. No full student-model forward is needed.
+            with torch.autocast(
+                device_type=student.device.type,
+                dtype=student.dtype,
+                enabled=student.device.type == "cuda",
+            ):
+                pred, _ = replacement(
+                    teacher_cap["x"],
+                    position_embeddings=teacher_cap["pos"],
+                    attention_mask=teacher_cap["mask"],
+                )
+            core_pred = replacement.last_core_output
+            if core_pred is None:
+                raise RuntimeError("replacement did not expose core output")
+            zero = pred.new_zeros(())
+            decision_kl = zero
+            action_kl = zero
+            logit_mse = zero
+
+        nmse, cosine = _local_metrics(
+            pred, teacher_cap["y"], valid
+        )
+        core_nmse, core_cosine = _core_metrics(
+            core_pred, teacher_cap["core"], valid
+        )
+
+        if functional:
+            refine_progress = float(
+                step - functional_start
+            ) / float(max(1, steps - functional_start))
+            decision_weight = 0.75 + 0.75 * refine_progress
+        else:
+            decision_weight = 0.0
+
         loss = (
             nmse
             + 0.30 * (1.0 - cosine)
             + 0.20 * core_nmse
             + 0.08 * (1.0 - core_cosine)
             + decision_weight * decision_kl
-            + 0.05 * action_kl
-            + 0.10 * logit_mse
+            + 0.03 * action_kl
+            + 0.05 * logit_mse
         )
         if not torch.isfinite(loss):
             raise RuntimeError(
@@ -396,21 +530,24 @@ def _train_candidate(
                 f"core_nmse={float(core_nmse.detach()):.4f} "
                 f"dkl={float(decision_kl.detach()):.4f} "
                 f"logit={float(logit_mse.detach()):.4f} "
-                f"dw={decision_weight:.2f} grad={float(grad):.3f}"
+                f"dw={decision_weight:.2f} "
+                f"lr={opt.param_groups[0]['lr']:.5f} "
+                f"stage={'functional' if functional else 'local'} "
+                f"grad={float(grad):.3f}"
             )
         if not should_check:
             continue
 
         replacement.eval()
-        local = _probe_local(
-            teacher, student, layer_idx, probe_batch
+        local = _probe_local_cached(
+            replacement, probe_target, student
         )
         fast = fast_teacher_student_eval(
             teacher,
             student,
             fast_items,
             batch_size=max(4, batch_size * 4),
-            limit=min(128, len(fast_items)),
+            limit=min(64, len(fast_items)),
         )
         score = _candidate_score(local, fast)
         print(
@@ -442,6 +579,26 @@ def _train_candidate(
                 k: v.detach().cpu().clone()
                 for k, v in replacement.state_dict().items()
             }
+
+        # If the high-LR local transfer reaches a strong approximation early,
+        # do not wait for the fixed 60% boundary: start end-to-end refinement
+        # on the next step.
+        if (
+            step < functional_start
+            and (
+                (
+                    local["nmse"] <= 0.42
+                    and local["cosine"] >= 0.78
+                )
+                or fast["teacher_student_top1_agreement"] >= 0.94
+            )
+        ):
+            functional_start = step + 1
+            min_gate_step = functional_start
+            print(
+                f"  EARLY REFINEMENT: functional distillation starts at "
+                f"step {functional_start} (scheduled {scheduled_functional_start})."
+            )
 
         ready_for_gate = (
             step >= min_gate_step
@@ -490,15 +647,15 @@ def _train_candidate(
     replacement.eval()
 
     # Re-evaluate the best checkpoint, not merely the final optimizer step.
-    best_local = _probe_local(
-        teacher, student, layer_idx, probe_batch
+    best_local = _probe_local_cached(
+        replacement, probe_target, student
     )
     best_fast = fast_teacher_student_eval(
         teacher,
         student,
         fast_items,
         batch_size=max(4, batch_size * 4),
-        limit=min(128, len(fast_items)),
+        limit=min(96, len(fast_items)),
     )
     final_gate = evaluate_agent(
         student,
@@ -529,8 +686,13 @@ def _train_candidate(
         "accuracy_drop": final_drop,
         "training": {
             "steps": int(steps),
-            "core_learning_rate": core_lr,
-            "output_learning_rate": output_lr,
+            "core_learning_rate_start": core_lr_start,
+            "core_learning_rate_end": core_lr_end,
+            "output_learning_rate_start": output_lr_start,
+            "output_learning_rate_end": output_lr_end,
+            "functional_refinement_start_step": functional_start,
+            "scheduled_functional_refinement_start_step": scheduled_functional_start,
+            "local_only_fraction": float(functional_start) / float(max(1, steps)),
             "decision_distillation": True,
             "train_output_projection": True,
             "qkv_frozen": True,
@@ -785,7 +947,7 @@ def run_pdelta3_optimized(cfg: LayaLabConfig):
         teacher_agent=teacher,
         label=cfg.architecture,
     )
-    final_fast = fast_teacher_student_eval(
+    final_model_fast = fast_teacher_student_eval(
         teacher,
         student,
         fast_items,
@@ -799,6 +961,28 @@ def run_pdelta3_optimized(cfg: LayaLabConfig):
         for i, layer in enumerate(student.model.encoder.layers)
         if isinstance(layer.attn, PDelta3GDN2CLVRAttention)
     ]
+    if accepted_layers:
+        reported_fast = final_model_fast
+        fast_eval_subject = "accepted_student"
+        restored_teacher_fast = None
+    elif history:
+        # Do not hide a rejected candidate's real speed/quality behind the
+        # restored teacher copy.  Report the best candidate diagnostic as the
+        # primary fast comparison and keep the restored-teacher identity check
+        # separately.
+        best_rec = min(
+            history,
+            key=lambda h: _candidate_score(h["local"], h["fast_eval"]),
+        )
+        reported_fast = dict(best_rec["fast_eval"])
+        reported_fast["candidate_layer"] = int(best_rec["layer"])
+        fast_eval_subject = "best_rejected_candidate"
+        restored_teacher_fast = final_model_fast
+    else:
+        reported_fast = final_model_fast
+        fast_eval_subject = "unmodified_teacher"
+        restored_teacher_fast = final_model_fast
+
     report = {
         "architecture": cfg.architecture,
         "model_id": cfg.model_id,
@@ -814,16 +998,20 @@ def run_pdelta3_optimized(cfg: LayaLabConfig):
         "teacher_gate": teacher_gate,
         "teacher_final": teacher_final,
         "student_final": student_final,
-        "fast_eval": final_fast,
+        "fast_eval": reported_fast,
+        "fast_eval_subject": fast_eval_subject,
+        "restored_teacher_fast_eval": restored_teacher_fast,
         "latency": latency,
         "demo": demo,
         "gate_final_disjoint": True,
         "conversion_succeeded": bool(accepted_layers),
         "student_is_unmodified_teacher": not bool(accepted_layers),
         "notes": [
-            "QKV stays frozen; copied Wo is calibrated at 5% of the core LR.",
-            "PDelta3 now includes a learned positive-feature global linear path.",
-            "Training combines local attention/core fidelity with decision/action distillation.",
+            "QKV stays frozen; copied Wo uses 10% of the core LR.",
+            "Core LR follows the notebook directly and decays from start to final LR without an internal cap.",
+            "PDelta3 uses one GDN2 recurrent residual scan; bidirectional context comes from the global linear path.",
+            "Core math follows CUDA autocast instead of forcing FP32 activation/state tensors.",
+            "Training uses a fast local-transfer stage before full decision/action refinement.",
             "Fast eval is batched and label-free; strict acceptance still uses held-out Agent.predict metrics.",
             "Gate and final evaluation sets are disjoint and workflow-stratified.",
             "Only full-attention candidates are attempted; training stops after the first strict pass.",
@@ -842,8 +1030,11 @@ def run_pdelta3_optimized(cfg: LayaLabConfig):
     print("\nAccepted layers:", accepted_layers)
     print("Final student metrics:")
     print(json.dumps(student_final, indent=2))
-    print("Fast teacher/student comparison:")
-    print(json.dumps(final_fast, indent=2))
+    print("Fast teacher/student comparison:", fast_eval_subject)
+    print(json.dumps(reported_fast, indent=2))
+    if restored_teacher_fast is not None:
+        print("Restored-teacher identity check:")
+        print(json.dumps(restored_teacher_fast, indent=2))
     print("Latency:")
     print(json.dumps(latency, indent=2))
     print("Saved:", out_dir / "adapter.pt")

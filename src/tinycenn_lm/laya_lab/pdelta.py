@@ -13,12 +13,12 @@ from .core import (
 
 
 class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
-    """Bidirectional encoder adaptation of PDelta3-GDN2-CLVR.
+    """Fast bidirectional encoder adaptation of PDelta3-GDN2-CLVR.
 
-    The recurrent GDN2 memory handles long-range content while a learned
-    non-attention local/direct value mixer handles the strong diagonal/local
-    component found in ModernBERT attention. This avoids asking the recurrent
-    state to reproduce both regimes with one path.
+    Bidirectional/global context is supplied by the learned linear-attention
+    branch.  GDN2 remains as a causal recurrent residual, so we avoid the old
+    forward+reverse Python scan that roughly doubled sequential inference cost.
+    Core math follows the surrounding autocast dtype instead of forcing FP32.
     """
 
     architecture = "pdelta3_gdn2_clvr"
@@ -115,7 +115,7 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
         # [GDN2 recurrent, learned global kernel, local convolution, direct V].
         # Start global-dominant for full-attention ModernBERT layers while
         # keeping every branch active so all routes receive gradient.
-        init_mix = torch.tensor([0.5, 1.5, -0.5, -1.5], dtype=torch.float32)
+        init_mix = torch.tensor([0.0, 2.0, -0.5, -1.5], dtype=torch.float32)
         self.mix_logits = nn.Parameter(init_mix[None].repeat(self.num_heads, 1))
         # Zero-initialized token-dependent correction preserves the stable
         # global-dominant warm start but lets each query choose its best route.
@@ -123,12 +123,15 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
             torch.zeros(self.num_heads, 4, self.head_dim)
         )
 
-        self.direction_logits = nn.Parameter(torch.zeros(self.num_heads, 2))
         self.log_gain = nn.Parameter(torch.zeros(self.num_heads))
 
     def _project(self, x: Tensor, w: Tensor, bias: Tensor | None = None):
-        y = torch.einsum("bhtd,hfd->bhtf", x.float(), w.float())
-        return y if bias is None else y + bias[None, :, None, :]
+        # Let CUDA autocast choose the fast matmul dtype. Parameters stay FP32
+        # master weights for AdamW, but activations are no longer forced to FP32.
+        y = torch.einsum("bhtd,hfd->bhtf", x, w)
+        if bias is None:
+            return y
+        return y + bias.to(y.dtype)[None, :, None, :]
 
     def _global_linear(
         self,
@@ -138,12 +141,12 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
         mask: Tensor,
     ):
         """Learned positive-feature approximation of bidirectional attention."""
-        scale = self.global_log_scale.float().clamp(-1.5, 1.5).exp()
+        scale = self.global_log_scale.to(q.dtype).clamp(-1.5, 1.5).exp()
         qz = torch.einsum(
-            "bhtd,hfd->bhtf", q.float(), self.global_wq.float()
+            "bhtd,hfd->bhtf", q, self.global_wq
         )
         kz = torch.einsum(
-            "bhtd,hfd->bhtf", k.float(), self.global_wk.float()
+            "bhtd,hfd->bhtf", k, self.global_wk
         )
         qz = qz * self.global_input_scale * scale[None, :, None, None]
         kz = kz * self.global_input_scale * scale[None, :, None, None]
@@ -159,7 +162,7 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
             dim=-1,
         ).clamp_min(1e-6) * mask
 
-        vf = v.float() * mask
+        vf = v * mask
         memory = torch.einsum("bhtf,bhtd->bhfd", kf, vf)
         normalizer = kf.sum(dim=2)
         numerator = torch.einsum("bhtf,bhfd->bhtd", qf, memory)
@@ -180,8 +183,8 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
         k = _depthwise_sequence_conv(k, self.k_conv, causal=True)
         v = _depthwise_sequence_conv(v, self.v_conv, causal=True)
 
-        qn = F.normalize(q.float(), dim=-1)
-        kn = F.normalize(k.float(), dim=-1)
+        qn = F.normalize(q, dim=-1)
+        kn = F.normalize(k, dim=-1)
         qf = F.normalize(self._project(qn, self.wq), dim=-1)
         kf = F.normalize(self._project(kn, self.wk), dim=-1)
 
@@ -191,22 +194,22 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
         write = torch.sigmoid(
             torch.einsum(
                 "bhtd,hde->bhte",
-                F.normalize(v.float(), dim=-1),
-                self.write_w.float(),
+                F.normalize(v, dim=-1),
+                self.write_w,
             )
-            + self.write_b[None, :, None, :]
+            + self.write_b.to(v.dtype)[None, :, None, :]
         )
 
         aligned = torch.einsum(
-            "bhtd,hde->bhte", routed.float(), self.route_proj.float()
+            "bhtd,hde->bhte", routed, self.route_proj
         )
         route_gate = torch.sigmoid(
             torch.einsum(
-                "bhtd,hde->bhte", kn, self.route_gate_w.float()
+                "bhtd,hde->bhte", kn, self.route_gate_w
             )
-            + self.route_gate_b[None, :, None, :]
+            + self.route_gate_b.to(kn.dtype)[None, :, None, :]
         )
-        write_value = v.float() + route_gate * aligned
+        write_value = v + route_gate * aligned
 
         b, h, t, d = v.shape
         state = torch.zeros(
@@ -215,10 +218,10 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
             self.feature_dim,
             d,
             device=v.device,
-            dtype=torch.float32,
+            dtype=v.dtype,
         )
         outs = []
-        valid4 = valid[:, None, :, None].float()
+        valid4 = valid[:, None, :, None].to(v.dtype)
 
         for i in range(t):
             m = valid4[:, :, i]
@@ -260,43 +263,33 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
     ):
         q, k, v = self.qkv(hidden_states, position_embeddings)
         valid = _valid_tokens(attention_mask, hidden_states)
-        mask = valid[:, None, :, None].float()
+        mask = valid[:, None, :, None].to(q.dtype)
 
-        routed = hidden_states.float().view(
+        routed = hidden_states.view(
             hidden_states.shape[0],
             hidden_states.shape[1],
             self.num_heads,
             self.head_dim,
         ).transpose(1, 2)
 
-        fwd = self._scan(q, k, v, routed, valid)
-        rev = self._scan(
-            q.flip(2),
-            k.flip(2),
-            v.flip(2),
-            routed.flip(2),
-            valid.flip(1),
-        ).flip(2)
-
-        direction = torch.softmax(self.direction_logits.float(), dim=-1)
-        memory_out = (
-            direction[:, 0][None, :, None, None] * fwd
-            + direction[:, 1][None, :, None, None] * rev
-        )
+        # One causal GDN2 residual scan.  The global linear branch below is
+        # already bidirectional, so a second reverse recurrence only duplicates
+        # sequential work without providing unique full-context coverage.
+        memory_out = self._scan(q, k, v, routed, valid)
         global_out = self._global_linear(q, k, v, mask) * mask
 
         local_out = _depthwise_sequence_conv(
-            v.float(), self.local_weight, causal=False
+            v, self.local_weight, causal=False
         ) * mask
-        direct_out = v.float() * mask
+        direct_out = v * mask
 
         dynamic_mix = torch.einsum(
             "bhtd,hkd->bhtk",
-            F.normalize(q.float(), dim=-1),
-            self.mix_gate_w.float(),
+            F.normalize(q, dim=-1),
+            self.mix_gate_w,
         )
         mix = torch.softmax(
-            self.mix_logits.float()[None, :, None, :] + dynamic_mix,
+            self.mix_logits.to(q.dtype)[None, :, None, :] + dynamic_mix,
             dim=-1,
         )
         out = (
@@ -307,7 +300,7 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
         )
         out = (
             out
-            * self.log_gain.clamp(-2, 2).exp()[None, :, None, None]
+            * self.log_gain.to(out.dtype).clamp(-2, 2).exp()[None, :, None, None]
             * mask
         )
         return self.finish(out, hidden_states)
@@ -320,6 +313,9 @@ class PDelta3GDN2CLVRAttention(BaseLayaReplacementAttention):
             chunk_size=self.chunk_size,
             local_kernel=self.local_kernel,
             bidirectional=True,
+            recurrent_bidirectional=False,
+            bidirectional_context_source="global_linear_attention",
+            autocast_core=True,
             clvr_source="previous_encoder_representation",
             local_value_residual=True,
             global_linear_attention=True,
