@@ -120,15 +120,18 @@ class MemoryFusionV3Attention(BaseLayaReplacementAttention):
         self.gdn_fwd = _BiGDN2(self.num_heads, self.head_dim, self.memory_rank)
         self.gdn_bwd = _BiGDN2(self.num_heads, self.head_dim, self.memory_rank)
 
-        self.fusion_w = nn.Parameter(torch.zeros(self.num_heads, 4, self.head_dim))
+        # [symmetric-local, full-Hedgehog, direct-V, GDN2-forward, GDN2-backward]
+        # The direct-V path is essentially free and gives optimization a strong
+        # identity/self-token anchor while the non-local branches learn.
+        self.fusion_w = nn.Parameter(torch.zeros(self.num_heads, 5, self.head_dim))
         # Fast phase starts with only the vectorized local + full-sequence
         # Hedgehog branches. Recurrent GDN2 is activated only when the fixed
         # probe is already close enough to benefit from memory refinement.
-        prior = torch.tensor([1.5, 0.5, -4.0, -4.0])
+        prior = torch.tensor([1.20, 0.60, 0.20, -4.0, -4.0])
         self.fusion_bias = nn.Parameter(
             prior[None, :].expand(self.num_heads, -1).clone()
         )
-        self.branch_log_gain = nn.Parameter(torch.zeros(self.num_heads, 4))
+        self.branch_log_gain = nn.Parameter(torch.zeros(self.num_heads, 5))
         self.output_log_gain = nn.Parameter(torch.zeros(self.num_heads))
         self.memory_enabled = False
         for p in self.Wo.parameters():
@@ -197,6 +200,7 @@ class MemoryFusionV3Attention(BaseLayaReplacementAttention):
         valid = _valid_tokens(attention_mask, hidden_states)
         local = self._symmetric_local(q, k, v, valid)
         hedge = self._hedgehog_full(q, k, v, valid)
+        direct = v.float() * valid[:, None, :, None].float()
         all_logits = (
             torch.einsum("bhtd,hcd->bhtc", q.float(), self.fusion_w.float())
             + self.fusion_bias.float()[None, :, None, :]
@@ -205,13 +209,13 @@ class MemoryFusionV3Attention(BaseLayaReplacementAttention):
         if self.memory_enabled:
             gdn_fwd = self.gdn_fwd(q, k, v, valid, reverse=False)
             gdn_bwd = self.gdn_bwd(q, k, v, valid, reverse=True)
-            branches = torch.stack((local, hedge, gdn_fwd, gdn_bwd), dim=-2)
+            branches = torch.stack((local, hedge, direct, gdn_fwd, gdn_bwd), dim=-2)
             branches = branches * gains[None, :, None, :, None]
             weights = all_logits.softmax(dim=-1)
         else:
-            branches = torch.stack((local, hedge), dim=-2)
-            branches = branches * gains[:, :2][None, :, None, :, None]
-            weights = all_logits[..., :2].softmax(dim=-1)
+            branches = torch.stack((local, hedge, direct), dim=-2)
+            branches = branches * gains[:, :3][None, :, None, :, None]
+            weights = all_logits[..., :3].softmax(dim=-1)
         out = (weights[..., None] * branches).sum(dim=-2)
         out = (
             out
@@ -224,12 +228,31 @@ class MemoryFusionV3Attention(BaseLayaReplacementAttention):
         if not self.memory_enabled:
             self.memory_enabled = True
             with torch.no_grad():
-                self.fusion_bias[:, 2:].fill_(-1.0)
+                self.fusion_bias[:, 3:].fill_(-1.5)
             print("  enabling forward/backward GDN2 memory refinement")
 
     def core_parameters(self) -> list[nn.Parameter]:
         blocked = {id(p) for p in self.Wqkv.parameters()} | {id(p) for p in self.Wo.parameters()}
         return [p for p in self.parameters() if p.requires_grad and id(p) not in blocked]
+
+    def fast_parameters(self) -> list[nn.Parameter]:
+        # Small router/gain tensors can safely move much faster than the
+        # orthogonal feature maps and recurrent memories.
+        names = {
+            "local_bias", "local_mix", "hedge_q_bias", "hedge_k_bias",
+            "hedge_log_sharpness", "fusion_w", "fusion_bias",
+            "branch_log_gain", "output_log_gain",
+        }
+        return [p for n, p in self.named_parameters() if n in names and p.requires_grad]
+
+    def slow_core_parameters(self) -> list[nn.Parameter]:
+        fast = {id(p) for p in self.fast_parameters()}
+        out = {id(p) for p in self.output_parameters()}
+        blocked = {id(p) for p in self.Wqkv.parameters()}
+        return [
+            p for p in self.parameters()
+            if p.requires_grad and id(p) not in fast and id(p) not in out and id(p) not in blocked
+        ]
 
     def output_parameters(self) -> list[nn.Parameter]:
         return list(self.Wo.parameters())
@@ -244,8 +267,9 @@ class MemoryFusionV3Attention(BaseLayaReplacementAttention):
             local_branch="symmetric_qkv_sparse_softmax",
             global_branch="bidirectional_full_sequence_hedgehog",
             memory_branches=["gdn2_forward", "gdn2_backward"],
-            fusion_prior_fast=[1.5, 0.5, -4.0, -4.0],
-            fusion_prior_memory=[1.5, 0.5, -1.0, -1.0],
+            branches=["symmetric_local", "full_hedgehog", "direct_v", "gdn2_forward", "gdn2_backward"],
+            fusion_prior_fast=[1.20, 0.60, 0.20, -4.0, -4.0],
+            fusion_prior_memory=[1.20, 0.60, 0.20, -1.5, -1.5],
             memory_enabled=self.memory_enabled,
             train_output_projection=True,
             supported_attention_type="full_attention",
@@ -267,17 +291,21 @@ class LayaMemoryFusionV3Config:
     batch_size: int = 4
     train_cache_batches: int = 48
     probe_cache_batches: int = 8
-    functional_steps: int = 200
+    functional_steps: int = 160
     max_rounds: int = 2
     check_every: int = 20
     min_steps_before_check: int = 40
-    core_learning_rate: float = 3e-4
-    output_learning_rate: float = 3e-5
-    round_lr_decay: float = 0.60
-    weight_decay: float = 1e-3
+    fast_learning_rate: float = 1.0e-3
+    core_learning_rate: float = 5e-4
+    output_learning_rate: float = 5e-5
+    warmup_steps: int = 10
+    round_lr_decay: float = 0.70
+    weight_decay: float = 2e-4
     cosine_weight: float = 0.30
-    memory_enable_nmse: float = 0.32
-    memory_enable_cosine: float = 0.82
+    near_gate_cosine_weight: float = 0.85
+    near_gate_nmse: float = 0.38
+    memory_enable_nmse: float = 0.36
+    memory_enable_cosine: float = 0.80
     max_local_nmse: float = 0.20
     min_local_cosine: float = 0.90
     min_teacher_agreement: float = 0.95
@@ -290,6 +318,7 @@ class LayaMemoryFusionV3Config:
     decision_kl_weight: float = 0.12
     action_kl_weight: float = 0.01
     distill_temperature: float = 1.0
+    cache_on_device: bool = True
 
 
 def _tree_detach_cpu(x):
@@ -435,7 +464,9 @@ def _train_functional_round(
 ):
     replacement.train()
     replacement.out_drop.eval()
-    core = replacement.core_parameters()
+    fast = replacement.fast_parameters()
+    slow = replacement.slow_core_parameters()
+    core = fast + slow
     outp = replacement.output_parameters()
     for p in core:
         p.requires_grad = True
@@ -445,10 +476,18 @@ def _train_functional_round(
         p.requires_grad = True
 
     lr_scale = cfg.round_lr_decay ** (round_idx - 1)
-    opt = torch.optim.AdamW([
-        {"params": core, "lr": cfg.core_learning_rate * lr_scale},
-        {"params": outp, "lr": cfg.output_learning_rate * lr_scale},
-    ], weight_decay=cfg.weight_decay)
+    groups = [
+        {"params": fast, "lr": cfg.fast_learning_rate * lr_scale, "base_lr": cfg.fast_learning_rate * lr_scale},
+        {"params": slow, "lr": cfg.core_learning_rate * lr_scale, "base_lr": cfg.core_learning_rate * lr_scale},
+        {"params": outp, "lr": cfg.output_learning_rate * lr_scale, "base_lr": cfg.output_learning_rate * lr_scale},
+    ]
+    try:
+        opt = torch.optim.AdamW(
+            groups, weight_decay=cfg.weight_decay, betas=(0.9, 0.98),
+            fused=(device.type == "cuda")
+        )
+    except Exception:
+        opt = torch.optim.AdamW(groups, weight_decay=cfg.weight_decay, betas=(0.9, 0.98))
 
     best = _probe_metrics(replacement, probe_cache, device, dtype)
     best.update(step=0, round=round_idx)
@@ -461,8 +500,20 @@ def _train_functional_round(
         f"NMSE={best['nmse']:.4f} cos={best['cosine']:.4f}"
     )
 
+    rng = random.Random(cfg.seed + 1009 * round_idx)
+    order = list(range(len(train_cache)))
+    rng.shuffle(order)
+
     for step in range(1, cfg.functional_steps + 1):
-        entry = train_cache[(step - 1) % len(train_cache)]
+        if (step - 1) > 0 and (step - 1) % len(order) == 0:
+            rng.shuffle(order)
+        entry = train_cache[order[(step - 1) % len(order)]]
+
+        # Warm up the more aggressive V3-Turbo learning rates to avoid the
+        # large first-step gradient spike seen in the previous run.
+        warm = min(1.0, step / max(cfg.warmup_steps, 1))
+        for group in opt.param_groups:
+            group["lr"] = group["base_lr"] * warm
         x = entry["x"].to(device, non_blocking=True)
         target = entry["y"].to(device, non_blocking=True)
         pos = _tree_to(entry["pos"], device)
@@ -477,7 +528,15 @@ def _train_functional_round(
         ):
             pred, _ = replacement(x, position_embeddings=pos, attention_mask=mask)
             nmse, cosine = _functional_terms(pred, target, valid)
-            loss = nmse + cfg.cosine_weight * (1.0 - cosine)
+            # Once reconstruction is in the near-gate region, cosine becomes
+            # the limiting metric. Increase its gradient instead of spending
+            # hundreds of extra steps optimizing NMSE alone.
+            cos_w = (
+                cfg.near_gate_cosine_weight
+                if nmse.detach().item() <= cfg.near_gate_nmse
+                else cfg.cosine_weight
+            )
+            loss = nmse + cos_w * (1.0 - cosine)
         if not torch.isfinite(loss):
             raise RuntimeError(
                 f"non-finite V3 loss round={round_idx} step={step}"
@@ -490,7 +549,8 @@ def _train_functional_round(
             print(
                 f"round={round_idx} step={step:03d}/{cfg.functional_steps} "
                 f"nmse={nmse.detach().item():.4f} "
-                f"cos={cosine.detach().item():.4f} grad={float(grad):.3f}"
+                f"cos={cosine.detach().item():.4f} cw={cos_w:.2f} "
+                f"lr={opt.param_groups[0]['lr']:.1e} grad={float(grad):.3f}"
             )
 
         if step < cfg.min_steps_before_check or (
@@ -532,7 +592,8 @@ def _train_functional_round(
 
         if stale_checks >= 3 and lr_cuts < 2:
             for group in opt.param_groups:
-                group["lr"] *= 0.5
+                group["base_lr"] *= 0.55
+                group["lr"] = group["base_lr"]
             lr_cuts += 1
             stale_checks = 0
             print(
@@ -789,6 +850,22 @@ def run_memory_fusion_v3(cfg: LayaMemoryFusionV3Config):
         label="probe",
     )
 
+    if cfg.cache_on_device and teacher.device.type == "cuda":
+        def _move_cache(cache):
+            moved = []
+            for entry in cache:
+                moved.append({
+                    "x": entry["x"].to(teacher.device),
+                    "y": entry["y"].to(teacher.device),
+                    "pos": _tree_to(entry["pos"], teacher.device),
+                    "mask": _tree_to(entry["mask"], teacher.device),
+                    "valid": entry["valid"].to(teacher.device),
+                })
+            return moved
+        train_cache = _move_cache(train_cache)
+        probe_cache = _move_cache(probe_cache)
+        print("Teacher I/O cache moved to GPU for zero-copy functional fitting.")
+
     original = student.model.encoder.layers[idx].attn
     replacement = MemoryFusionV3Attention(
         teacher.model.encoder.layers[idx].attn,
@@ -920,7 +997,10 @@ def run_memory_fusion_v3(cfg: LayaMemoryFusionV3Config):
             "The Hedgehog branch is full-sequence and bidirectional.",
             "Forward and backward GDN2 memories use separate parameters.",
             "Layer 12 is trained from cached teacher attention I/O for substantially faster iteration.",
-            "Fast functional fitting uses only vectorized local+Hedgehog branches at first.",
+            "Fast functional fitting starts with vectorized local+Hedgehog+direct-V branches.",
+            "Router/gain parameters use a higher LR than feature maps; Wo uses a conservative LR.",
+            "Cosine weight increases automatically once NMSE enters the near-gate region.",
+            "Cached batches are reshuffled each pass and can remain on GPU for zero-copy fitting.",
             "Recurrent forward/backward GDN2 is activated only when the fixed probe reaches the near-gate region.",
             "Full-model Laya decision evaluation is deferred until local fidelity passes.",
         ],
