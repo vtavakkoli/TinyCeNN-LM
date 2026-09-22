@@ -132,13 +132,56 @@ def _student_forward_capture(student, layer_idx, batch, grad: bool):
 
 
 @torch.no_grad()
-def _teacher_forward(teacher, batch):
-    with torch.autocast(
-        device_type=teacher.device.type,
-        dtype=teacher.dtype,
-        enabled=teacher.device.type == "cuda",
-    ):
-        return teacher.model(*_args(batch, teacher.device))
+def _teacher_forward_capture(teacher, layer_idx, batch):
+    """One teacher forward: logits + candidate-layer input/output/core target."""
+    capture: dict[str, Any] = {}
+    attn = teacher.model.encoder.layers[layer_idx].attn
+
+    def pre_hook(module, hook_args, kwargs):
+        x = hook_args[0] if hook_args else kwargs["hidden_states"]
+        capture["x"] = x.detach()
+        capture["pos"] = _tree_detach(kwargs.get("position_embeddings"))
+        mask = kwargs.get("attention_mask")
+        capture["mask"] = None if mask is None else mask.detach()
+
+    def wo_pre_hook(module, hook_args):
+        if not hook_args:
+            return
+        flat = hook_args[0]
+        if flat.ndim != 3:
+            return
+        b, t, _ = flat.shape
+        h = int(attn.config.num_attention_heads)
+        d = flat.shape[-1] // h
+        capture["core"] = (
+            flat.reshape(b, t, h, d).transpose(1, 2).contiguous().detach()
+        )
+
+    def post_hook(module, hook_args, kwargs, output):
+        capture["y"] = output[0].detach()
+
+    h1 = attn.register_forward_pre_hook(pre_hook, with_kwargs=True)
+    h2 = attn.Wo.register_forward_pre_hook(wo_pre_hook)
+    h3 = attn.register_forward_hook(post_hook, with_kwargs=True)
+    try:
+        with torch.autocast(
+            device_type=teacher.device.type,
+            dtype=teacher.dtype,
+            enabled=teacher.device.type == "cuda",
+        ):
+            out = teacher.model(*_args(batch, teacher.device))
+    finally:
+        h1.remove()
+        h2.remove()
+        h3.remove()
+
+    required = ("x", "y", "core")
+    if any(k not in capture for k in required):
+        raise RuntimeError(
+            f"failed to capture teacher layer {layer_idx}: "
+            f"missing {[k for k in required if k not in capture]}"
+        )
+    return capture, out
 
 
 @torch.no_grad()
@@ -294,24 +337,37 @@ def _train_candidate(
                 p.data = p.data.float()
             core_params.append(p)
 
-    core_lr = min(float(cfg.learning_rate), 6e-4)
-    output_lr = core_lr * 0.05
+    # Restore the fast-convergence regime: start at 1e-2 and decay
+    # smoothly to 1e-3.  The previous optimized runner accidentally capped the
+    # requested LR at 6e-4, which is why 900 steps still converged very slowly.
+    core_lr_start = float(cfg.learning_rate)
+    core_lr_end = float(
+        cfg.final_learning_rate
+        if cfg.final_learning_rate is not None
+        else core_lr_start * 0.1
+    )
+    if core_lr_start <= 0 or core_lr_end <= 0:
+        raise ValueError("learning rates must be positive")
+    if core_lr_end > core_lr_start:
+        raise ValueError("final_learning_rate must be <= learning_rate")
+
+    output_lr_start = core_lr_start * 0.10
+    output_lr_end = core_lr_end * 0.10
     opt = torch.optim.AdamW(
         [
-            {"params": core_params, "lr": core_lr},
-            {"params": output_params, "lr": output_lr},
+            {"params": core_params, "lr": core_lr_start},
+            {"params": output_params, "lr": output_lr_start},
         ],
         weight_decay=cfg.weight_decay,
+        betas=(0.9, 0.95),
     )
 
-    warmup = max(10, min(60, steps // 12))
+    end_ratio = core_lr_end / core_lr_start
 
     def lr_scale(step_idx):
-        if step_idx < warmup:
-            return 0.15 + 0.85 * float(step_idx + 1) / float(warmup)
-        progress = float(step_idx - warmup) / float(max(1, steps - warmup))
+        progress = float(step_idx) / float(max(1, steps - 1))
         cosine = 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
-        return 0.08 + 0.92 * cosine
+        return end_ratio + (1.0 - end_ratio) * cosine
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_scale)
 
@@ -325,8 +381,13 @@ def _train_candidate(
     accepted_checks = None
     accepted_drop = None
 
-    check_every = max(50, steps // 12)
-    min_gate_step = max(150, steps // 4)
+    # Stage 1 is cheap local transfer.  Stage 2 turns on the expensive
+    # full-student decision distillation only after the replacement has learned
+    # the teacher attention shape.  This removes a full student-model pass from
+    # most optimization steps.
+    functional_start = max(40, int(round(steps * 0.60)))
+    check_every = max(25, steps // 14)
+    min_gate_step = functional_start
     pad_id = teacher.tok.pad_token_id
 
     for step in range(1, steps + 1):
@@ -339,37 +400,77 @@ def _train_candidate(
         replacement.train()
         replacement.out_drop.eval()
 
-        with torch.no_grad():
-            tlog, tact = _teacher_forward(teacher, batch)
+        # One teacher full forward captures everything needed for local transfer
+        # and, later, functional distillation.  The previous code performed an
+        # extra teacher-attention forward every step.
+        teacher_cap, (tlog, tact) = _teacher_forward_capture(
+            teacher, layer_idx, batch
+        )
 
         opt.zero_grad(set_to_none=True)
-        cap, (slog, sact) = _student_forward_capture(
-            student, layer_idx, batch, True
-        )
-        target, target_core = _teacher_attention_target(
-            teacher, layer_idx, cap["x"], cap["pos"], cap["mask"]
-        )
-
         valid = batch["attention_mask"].to(student.device).bool()
         marker_mask = batch["marker_mask"].to(student.device).bool()
-        nmse, cosine = _local_metrics(cap["y"], target, valid)
-        core_nmse, core_cosine = _core_metrics(
-            cap["core"], target_core, valid
-        )
-        decision_kl = _kl(slog, tlog, marker_mask, temperature=1.25)
-        action_kl = _kl(sact, tact, None, temperature=1.0)
-        logit_mse = _centered_logit_mse(slog, tlog, marker_mask)
+        functional = step >= functional_start
 
-        progress = float(step - 1) / float(max(1, steps - 1))
-        decision_weight = 0.50 + 1.75 * progress
+        if functional:
+            # Refinement stage: one student full forward gives both the
+            # replacement output/core and the final Laya decision logits.
+            cap, (slog, sact) = _student_forward_capture(
+                student, layer_idx, batch, True
+            )
+            pred = cap["y"]
+            core_pred = cap["core"]
+            decision_kl = _kl(
+                slog, tlog, marker_mask, temperature=1.25
+            )
+            action_kl = _kl(sact, tact, None, temperature=1.0)
+            logit_mse = _centered_logit_mse(
+                slog, tlog, marker_mask
+            )
+        else:
+            # Fast transfer stage: train only the candidate module on teacher
+            # hidden states. No full student-model forward is needed.
+            with torch.autocast(
+                device_type=student.device.type,
+                dtype=student.dtype,
+                enabled=student.device.type == "cuda",
+            ):
+                pred, _ = replacement(
+                    teacher_cap["x"],
+                    position_embeddings=teacher_cap["pos"],
+                    attention_mask=teacher_cap["mask"],
+                )
+            core_pred = replacement.last_core_output
+            if core_pred is None:
+                raise RuntimeError("replacement did not expose core output")
+            zero = pred.new_zeros(())
+            decision_kl = zero
+            action_kl = zero
+            logit_mse = zero
+
+        nmse, cosine = _local_metrics(
+            pred, teacher_cap["y"], valid
+        )
+        core_nmse, core_cosine = _core_metrics(
+            core_pred, teacher_cap["core"], valid
+        )
+
+        if functional:
+            refine_progress = float(
+                step - functional_start
+            ) / float(max(1, steps - functional_start))
+            decision_weight = 0.75 + 0.75 * refine_progress
+        else:
+            decision_weight = 0.0
+
         loss = (
             nmse
             + 0.30 * (1.0 - cosine)
             + 0.20 * core_nmse
             + 0.08 * (1.0 - core_cosine)
             + decision_weight * decision_kl
-            + 0.05 * action_kl
-            + 0.10 * logit_mse
+            + 0.03 * action_kl
+            + 0.05 * logit_mse
         )
         if not torch.isfinite(loss):
             raise RuntimeError(
@@ -396,7 +497,10 @@ def _train_candidate(
                 f"core_nmse={float(core_nmse.detach()):.4f} "
                 f"dkl={float(decision_kl.detach()):.4f} "
                 f"logit={float(logit_mse.detach()):.4f} "
-                f"dw={decision_weight:.2f} grad={float(grad):.3f}"
+                f"dw={decision_weight:.2f} "
+                f"lr={opt.param_groups[0]['lr']:.5f} "
+                f"stage={'functional' if functional else 'local'} "
+                f"grad={float(grad):.3f}"
             )
         if not should_check:
             continue
@@ -529,8 +633,12 @@ def _train_candidate(
         "accuracy_drop": final_drop,
         "training": {
             "steps": int(steps),
-            "core_learning_rate": core_lr,
-            "output_learning_rate": output_lr,
+            "core_learning_rate_start": core_lr_start,
+            "core_learning_rate_end": core_lr_end,
+            "output_learning_rate_start": output_lr_start,
+            "output_learning_rate_end": output_lr_end,
+            "functional_refinement_start_step": functional_start,
+            "local_only_fraction": float(functional_start) / float(max(1, steps)),
             "decision_distillation": True,
             "train_output_projection": True,
             "qkv_frozen": True,
