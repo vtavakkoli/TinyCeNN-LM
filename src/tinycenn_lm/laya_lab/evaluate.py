@@ -60,9 +60,7 @@ def evaluate_agent(agent, cases, teacher_agent=None, label: str = "model"):
             by_workflow.setdefault(workflow, []).append(row)
             if teach is not None:
                 teacher_rows.append((_answer_probs(teach["answers"][qid], qdef), p))
-    if agent.device.type == "cuda":
-        torch.cuda.synchronize(agent.device)
-    elapsed = time.perf_counter() - t0
+    elapsed = model_elapsed
 
     def metrics(sub):
         if not sub:
