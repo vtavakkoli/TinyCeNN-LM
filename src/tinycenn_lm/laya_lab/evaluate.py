@@ -47,9 +47,17 @@ def evaluate_agent(agent, cases, teacher_agent=None, label: str = "model"):
     rows, teacher_rows = [], []
     by_type: dict[str, list] = {}
     by_workflow: dict[str, list] = {}
-    t0 = time.perf_counter()
+    model_elapsed = 0.0
+
     for state, questions, gold, workflow in cases:
+        if agent.device.type == "cuda":
+            torch.cuda.synchronize(agent.device)
+        t_pred = time.perf_counter()
         pred = agent.predict(state, questions)
+        if agent.device.type == "cuda":
+            torch.cuda.synchronize(agent.device)
+        model_elapsed += time.perf_counter() - t_pred
+
         teach = teacher_agent.predict(state, questions) if teacher_agent is not None else None
         for qid, qdef in questions.items():
             p = _answer_probs(pred["answers"][qid], qdef)
@@ -60,7 +68,6 @@ def evaluate_agent(agent, cases, teacher_agent=None, label: str = "model"):
             by_workflow.setdefault(workflow, []).append(row)
             if teach is not None:
                 teacher_rows.append((_answer_probs(teach["answers"][qid], qdef), p))
-    elapsed = model_elapsed
 
     def metrics(sub):
         if not sub:
@@ -94,8 +101,8 @@ def evaluate_agent(agent, cases, teacher_agent=None, label: str = "model"):
     out = metrics(rows)
     out.update(
         label=label,
-        seconds=elapsed,
-        ms_per_case=1000.0 * elapsed / max(len(cases), 1),
+        seconds=model_elapsed,
+        ms_per_case=1000.0 * model_elapsed / max(len(cases), 1),
         by_type={k: metrics(v) for k, v in sorted(by_type.items())},
         by_workflow={k: metrics(v) for k, v in sorted(by_workflow.items())},
     )
