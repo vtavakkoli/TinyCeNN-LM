@@ -51,7 +51,26 @@ def run_experiment(cfg: LayaLabConfig):
     teacher_gate = evaluate_agent(teacher, gate_cases, label="teacher")
     print("Teacher gate accuracy:", round(teacher_gate["accuracy"], 4))
 
-    if cfg.architecture == "integrated_memory_v22":
+    if cfg.target_layers:
+        n_layers = len(student.model.encoder.layers)
+        candidates = list(dict.fromkeys(int(i) for i in cfg.target_layers))
+        invalid = [i for i in candidates if i < 0 or i >= n_layers]
+        if invalid:
+            raise ValueError(
+                f"target_layers contains invalid ModernBERT layer indices: {invalid}"
+            )
+        if cfg.architecture == "integrated_memory_v22":
+            non_full = [
+                i for i in candidates
+                if str(student.model.encoder.layers[i].attention_type)
+                != "full_attention"
+            ]
+            if non_full:
+                raise ValueError(
+                    "Integrated Memory V2.2 target_layers must be "
+                    f"full-attention layers; got {non_full}"
+                )
+    elif cfg.architecture == "integrated_memory_v22":
         candidates = choose_candidate_layers(
             student.model,
             settings["max_candidates"],
