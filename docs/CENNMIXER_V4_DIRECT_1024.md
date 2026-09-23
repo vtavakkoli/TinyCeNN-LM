@@ -155,7 +155,7 @@ This version intentionally gives back some of the earlier parameter reduction to
 - `src/tinycenn_lm/qwen35_cennmixer_v4.py`
 - `src/tinycenn_lm/qwen35_cennmixer_v4_train.py`
 - `scripts/run_qwen35_cennmixer_v4.py`
-- `cenn-v4-context-quality/cennmixer-v4-runtime-training/notebooks/Qwen35_08B_CeNNMixer_v4_DeltaCell_Colab.ipynb`
+- `notebooks/Qwen35_08B_CeNNMixer_v4_DeltaCell_Colab.ipynb`
 
 ## Important limitation
 

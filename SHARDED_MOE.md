@@ -57,6 +57,6 @@ The 50-minute cap leaves margin for final evaluation and Hugging Face upload/rel
 
 ## Colab
 
-`notebooks/TinyCeNN_SharedFFN_Top2_Colab.ipynb`
+`notebooks/archive/original/TinyCeNN_SharedFFN_Top2_Colab.ipynb`
 
 The notebook publishes the best checkpoint as `<HF-user>/TinyCeNN-LM-Sharded-MoE-Top2` and re-downloads it to reproduce the exact held-out benchmark fingerprint and CE.

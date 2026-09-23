@@ -1,6 +1,6 @@
 # Continued learning after the first 10M tokens
 
-Use [the optimized Colab notebook](notebooks/TinyCeNN_Optimized_Continue_Colab.ipynb)
+Use [the optimized Colab notebook](notebooks/archive/original/TinyCeNN_Optimized_Continue_Colab.ipynb)
 to continue an existing dense CeNN checkpoint. It keeps the Transformer-free
 architecture and the deterministic held-out benchmark.
 

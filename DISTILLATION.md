@@ -106,11 +106,11 @@ Statuses are:
 
 Initial Transformer → CeNN distillation:
 
-`notebooks/TinyCeNN_Distill_Colab.ipynb`
+`notebooks/archive/original/TinyCeNN_Distill_Colab.ipynb`
 
 Rigorous continuation from the published 10M checkpoint:
 
-`notebooks/TinyCeNN_Rigorous_Continue_Colab.ipynb`
+`notebooks/archive/original/TinyCeNN_Rigorous_Continue_Colab.ipynb`
 
 The rigorous notebook publishes a versioned model as `<HF-user>/TinyCeNN-LM-Distilled-v2`, preserving the original 10M checkpoint for reproducibility.
 
