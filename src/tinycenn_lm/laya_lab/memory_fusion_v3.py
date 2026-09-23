@@ -5,7 +5,7 @@ import json
 import math
 import random
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace as dataclass_replace
 from pathlib import Path
 from typing import Any
 
@@ -372,6 +372,11 @@ class LayaMemoryFusionV3Config:
     action_kl_weight: float = 0.01
     distill_temperature: float = 1.0
     cache_on_device: bool = True
+    # Continue fitting after a failed decision gate, even if local gates pass.
+    stop_on_local_pass: bool = True
+    decision_local_weight: float = 1.0
+    decision_margin_weight: float = 0.0
+    decision_margin: float = 0.02
 
 
 def _tree_bytes(x):
@@ -516,6 +521,39 @@ def _kl(student, teacher, temperature: float, mask=None):
     ).sum(-1).mean() * (t * t)
 
 
+def _teacher_margin_loss(student, teacher, mask, margin: float):
+    """Preserve teacher argmax, emphasizing close decisions without sharpening KL.
+
+    Match at most the teacher's own positive logit margin. Exact teacher ties
+    receive a tiny margin consistent with torch.argmax's first-index rule.
+    Padding and rows with fewer than two choices never contribute.
+    """
+    valid = mask.bool()
+    s = student.float().masked_fill(~valid, -1e4)
+    t = teacher.detach().float().masked_fill(~valid, -1e4)
+    winner = t.argmax(-1, keepdim=True)
+    rivals = valid.scatter(-1, winner, False)
+    s_win = s.gather(-1, winner).squeeze(-1)
+    t_win = t.gather(-1, winner).squeeze(-1)
+    s_rival = s.masked_fill(~rivals, -1e4).amax(-1)
+    t_rival = t.masked_fill(~rivals, -1e4).amax(-1)
+    desired = (t_win - t_rival).clamp(min=1e-6, max=max(margin, 1e-6))
+    loss = F.relu(desired - (s_win - s_rival))
+    eligible = valid.sum(-1) > 1
+    return (loss * eligible).sum() / eligible.sum().clamp_min(1)
+
+
+def _refinement_rank(result):
+    accepted, local, gate, checks, _ = result
+    local_ok = checks.get("local_nmse", False) and checks.get("local_cosine", False)
+    return (
+        bool(accepted), bool(local_ok),
+        float(gate.get("teacher_agreement", -1.0)),
+        -float(gate.get("mean_teacher_kl", float("inf"))),
+        -float(local["nmse"]),
+    )
+
+
 def _train_functional_round(
     replacement,
     train_cache: list[dict],
@@ -635,7 +673,8 @@ def _train_functional_round(
         )
 
         if (
-            probe["nmse"] <= cfg.max_local_nmse
+            cfg.stop_on_local_pass
+            and probe["nmse"] <= cfg.max_local_nmse
             and probe["cosine"] >= cfg.min_local_cosine
         ):
             best, best_state = probe, _state_cpu(replacement)
@@ -731,7 +770,15 @@ def _decision_refine(
         lr=cfg.core_learning_rate * cfg.decision_refine_lr_scale,
         weight_decay=cfg.weight_decay,
     )
-    best_gate = None
+    # Baseline participates in checkpoint selection: a failed refinement must
+    # neither lose useful agreement gains nor replace a better starting point.
+    local = _probe_metrics(replacement, probe_cache, device, teacher.dtype)
+    gate = evaluate_agent(student, gate_cases, teacher_agent=teacher, label="student")
+    accepted, checks, drop = _accept(local, teacher_gate, gate, cfg)
+    best_gate = (accepted, local, gate, checks, drop)
+    best_state = _state_cpu(replacement)
+    if accepted:
+        return best_gate
     for step in range(1, cfg.decision_refine_steps + 1):
         batch = _batch_from_items(
             train_items, step * cfg.batch_size, cfg.batch_size,
@@ -767,10 +814,16 @@ def _decision_refine(
             )
             akl = _kl(sact, tact, cfg.distill_temperature)
             loss = (
-                local_loss
+                cfg.decision_local_weight * local_loss
                 + cfg.decision_kl_weight * dkl
+                + cfg.decision_margin_weight * _teacher_margin_loss(
+                    slog, tlog, batch["marker_mask"].to(device), cfg.decision_margin
+                )
                 + cfg.action_kl_weight * akl
             )
+        if not torch.isfinite(loss):
+            replacement.load_state_dict(best_state)
+            raise RuntimeError(f"non-finite V3 decision refinement loss at step={step}")
         loss.backward()
         torch.nn.utils.clip_grad_norm_(params, 1.0)
         opt.step()
@@ -792,9 +845,15 @@ def _decision_refine(
                     student, gate_cases, teacher_agent=teacher, label="student"
                 )
                 accepted, checks, drop = _accept(local, teacher_gate, gate, cfg)
-                best_gate = (accepted, local, gate, checks, drop)
+                result = (accepted, local, gate, checks, drop)
+                if _refinement_rank(result) > _refinement_rank(best_gate):
+                    best_gate, best_state = result, _state_cpu(replacement)
+                print(f"  decision probe: agreement={gate['teacher_agreement']:.4f} "
+                      f"KL={gate['mean_teacher_kl']:.5f} accepted={accepted}")
                 if accepted:
-                    return best_gate
+                    break
+    replacement.load_state_dict(best_state)
+    replacement.eval()
     return best_gate
 
 
@@ -908,6 +967,11 @@ def run_memory_fusion_v3(cfg: LayaMemoryFusionV3Config):
             f"need at least {needed} training items for the configured caches; got {len(items)}"
         )
 
+    # Functional probe examples must not later become refinement training data.
+    probe_offset = cfg.train_cache_batches * cfg.batch_size
+    probe_end = probe_offset + cfg.probe_cache_batches * cfg.batch_size
+    decision_items = items[:probe_offset] + items[probe_end:]
+
     history = []
     for idx in candidates:
         print(f"\n=== Candidate layer {idx}: {student.model.encoder.layers[idx].attention_type} ===")
@@ -969,7 +1033,9 @@ def run_memory_fusion_v3(cfg: LayaMemoryFusionV3Config):
         for round_idx in range(1, cfg.max_rounds + 1):
             print(f"\n=== V3 layer {idx}: functional round {round_idx}/{cfg.max_rounds} ===")
             local, local_pass = _train_functional_round(
-                replacement, train_cache, probe_cache, cfg,
+                replacement, train_cache, probe_cache,
+                # Once decisions fail, use the remaining functional budget.
+                dataclass_replace(cfg, stop_on_local_pass=False) if round_idx > 1 else cfg,
                 teacher.device, teacher.dtype, round_idx
             )
             history.append({
@@ -1016,9 +1082,8 @@ def run_memory_fusion_v3(cfg: LayaMemoryFusionV3Config):
 
             if cfg.decision_refine_steps > 0:
                 print("Local gate passed but decision gate failed; short decision refinement...")
-                before_refine = _state_cpu(replacement)
                 refined = _decision_refine(
-                    teacher, student, replacement, cfg, items, train_cache,
+                    teacher, student, replacement, cfg, decision_items, train_cache,
                     probe_cache, gate_cases, teacher_gate
                 )
                 if refined is not None:
@@ -1035,7 +1100,8 @@ def run_memory_fusion_v3(cfg: LayaMemoryFusionV3Config):
                     })
                     if accepted:
                         break
-                replacement.load_state_dict(before_refine)
+                # _decision_refine restores its best checkpoint, including
+                # improvements that have not yet passed every strict gate.
 
         if not accepted:
             student.model.encoder.layers[idx].attn = original
