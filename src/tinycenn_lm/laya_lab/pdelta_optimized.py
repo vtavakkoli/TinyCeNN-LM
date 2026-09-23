@@ -430,14 +430,29 @@ def _train_candidate(
         betas=(0.9, 0.95),
     )
 
-    end_ratio = core_lr_end / core_lr_start
+    # Two-phase schedule.  The high 1e-2 rate is useful for local attention
+    # transfer, but is too aggressive once end-to-end decision gradients are
+    # introduced.  Keep the local stage long enough to learn the teacher
+    # attention shape, then step down to a narrow 2e-3 -> final-LR refinement
+    # band.  LRs are assigned explicitly at the start of each step so an early
+    # stage transition cannot accidentally run one functional update at the
+    # old high LR.
+    functional_start = min(steps, max(1, int(round(steps * 0.60))))
+    scheduled_functional_start = functional_start
+    local_lr_floor = max(core_lr_end * 2.5, core_lr_start * 0.30)
+    functional_lr_start = max(core_lr_end, min(local_lr_floor, core_lr_start * 0.20))
 
-    def lr_scale(step_idx):
-        progress = float(step_idx) / float(max(1, steps - 1))
+    def phase_lr(step_num):
+        if step_num < functional_start:
+            progress = float(step_num - 1) / float(max(1, functional_start - 2))
+            cosine = 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
+            return local_lr_floor + (core_lr_start - local_lr_floor) * cosine
+        progress = float(step_num - functional_start) / float(
+            max(1, steps - functional_start)
+        )
         cosine = 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
-        return end_ratio + (1.0 - end_ratio) * cosine
+        return core_lr_end + (functional_lr_start - core_lr_end) * cosine
 
-    scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_scale)
     scaler = torch.amp.GradScaler("cuda", enabled=student.device.type == "cuda" and student.dtype == torch.float16)
 
     # Candidate input is identical to the teacher up to this layer, so cache
@@ -457,15 +472,18 @@ def _train_candidate(
 
     # Stage 1 is cheap local transfer.  Stage 2 turns on the expensive
     # full-student decision distillation only after the replacement has learned
-    # the teacher attention shape.  This removes a full student-model pass from
-    # most optimization steps.
-    functional_start = min(steps, max(1, int(round(steps * 0.40))))
-    scheduled_functional_start = functional_start
+    # the teacher attention shape.  The 60% default boundary is intentionally
+    # later than the old 40% boundary; an early transition is allowed only when
+    # the held-out local probe is already close to the strict reconstruction
+    # gates.
     check_every = max(25, steps // 14)
     min_gate_step = functional_start
     pad_id = teacher.tok.pad_token_id
 
     for step in range(1, steps + 1):
+        used_lr = phase_lr(step)
+        opt.param_groups[0]["lr"] = used_lr
+        opt.param_groups[1]["lr"] = used_lr * 0.10
         batch = _batch_from_items(
             fit_items,
             (step - 1) * batch_size,
@@ -534,18 +552,28 @@ def _train_candidate(
             refine_progress = float(
                 step - functional_start
             ) / float(max(1, steps - functional_start))
-            decision_weight = 0.75 + 0.75 * refine_progress
+            # The old refinement jumped immediately to a 0.75 KL weight while
+            # the LR was still near 1e-2.  On Laya this produced gradient spikes
+            # and visibly destroyed the already-improving local fit.  Start the
+            # functional objective gently and let it become important only
+            # after the replacement has stabilized.
+            smooth = refine_progress * refine_progress * (3.0 - 2.0 * refine_progress)
+            decision_weight = 0.10 + 0.50 * smooth
+            action_weight = 0.01 + 0.02 * smooth
+            logit_weight = 0.01 + 0.03 * smooth
         else:
             decision_weight = 0.0
+            action_weight = 0.0
+            logit_weight = 0.0
 
         loss = (
             nmse
-            + 0.30 * (1.0 - cosine)
-            + 0.20 * core_nmse
-            + 0.08 * (1.0 - core_cosine)
+            + 0.50 * (1.0 - cosine)
+            + 0.25 * core_nmse
+            + 0.10 * (1.0 - core_cosine)
             + decision_weight * decision_kl
-            + 0.03 * action_kl
-            + 0.05 * logit_mse
+            + action_weight * action_kl
+            + logit_weight * logit_mse
         )
         if not torch.isfinite(loss):
             raise RuntimeError(
@@ -554,15 +582,15 @@ def _train_candidate(
 
         scaler.scale(loss).backward()
         scaler.unscale_(opt)
+        # Tighter clipping is intentional in functional refinement: the
+        # replacement is already near a useful local solution and large
+        # end-to-end gradients should not erase it.
+        clip_limit = 0.75 if functional else 1.0
         grad = torch.nn.utils.clip_grad_norm_(
-            core_params + output_params, 1.0
+            core_params + output_params, clip_limit
         )
-        used_lr = opt.param_groups[0]["lr"]
-        previous_scale = scaler.get_scale()
         scaler.step(opt)
         scaler.update()
-        if scaler.get_scale() >= previous_scale:
-            scheduler.step()
 
         should_check = (
             step == 1
@@ -630,16 +658,12 @@ def _train_candidate(
         # If the high-LR local transfer reaches a strong approximation early,
         # do not wait for the scheduled boundary: start end-to-end refinement
         # on the next step.
-        if (
-            step < functional_start
-            and (
-                (
-                    local["nmse"] <= 0.42
-                    and local["cosine"] >= 0.78
-                )
-                or fast["teacher_student_top1_agreement"] >= 0.94
-            )
-        ):
+        near_local_gate = (
+            local["nmse"] <= min(0.32, cfg.max_local_nmse * 1.05)
+            and local["cosine"] >= max(0.85, cfg.min_local_cosine - 0.03)
+            and fast["teacher_student_top1_agreement"] >= 0.90
+        )
+        if step < functional_start and near_local_gate:
             functional_start = step + 1
             min_gate_step = functional_start
             print(
