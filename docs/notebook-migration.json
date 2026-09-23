@@ -1,0 +1,140 @@
+{
+  "baseline_commit": "1a2b371b6a70e8b73dce18cbc8c4f8996b05f459",
+  "moves": [
+    {
+      "from": "notebooks/TinyCeNN_LM_Colab.ipynb",
+      "to": "notebooks/archive/original/TinyCeNN_LM_Colab.ipynb",
+      "reason": "Legacy/ablation family in MODEL_STATUS.md"
+    },
+    {
+      "from": "notebooks/TinyCeNN_Distill_Colab.ipynb",
+      "to": "notebooks/archive/original/TinyCeNN_Distill_Colab.ipynb",
+      "reason": "Legacy/ablation family in MODEL_STATUS.md"
+    },
+    {
+      "from": "notebooks/TinyCeNN_Optimized_Continue_Colab.ipynb",
+      "to": "notebooks/archive/original/TinyCeNN_Optimized_Continue_Colab.ipynb",
+      "reason": "Legacy/ablation family in MODEL_STATUS.md"
+    },
+    {
+      "from": "notebooks/TinyCeNN_Rigorous_Continue_Colab.ipynb",
+      "to": "notebooks/archive/original/TinyCeNN_Rigorous_Continue_Colab.ipynb",
+      "reason": "Legacy/ablation family in MODEL_STATUS.md"
+    },
+    {
+      "from": "notebooks/TinyCeNN_SharedFFN_Top2_Colab.ipynb",
+      "to": "notebooks/archive/original/TinyCeNN_SharedFFN_Top2_Colab.ipynb",
+      "reason": "Legacy/ablation family in MODEL_STATUS.md"
+    },
+    {
+      "from": "notebooks/TinyCeNN_Story_v2_Colab.ipynb",
+      "to": "notebooks/archive/original/TinyCeNN_Story_v2_Colab.ipynb",
+      "reason": "Legacy/ablation family in MODEL_STATUS.md"
+    },
+    {
+      "from": "notebooks/TinyCeNN_Story_AntiRepeat_Colab.ipynb",
+      "to": "notebooks/archive/original/TinyCeNN_Story_AntiRepeat_Colab.ipynb",
+      "reason": "Legacy/ablation family in MODEL_STATUS.md"
+    },
+    {
+      "from": "notebooks/SmolLM2_AMCeNN_Top2_v2_Colab.ipynb",
+      "to": "notebooks/archive/amcenn/SmolLM2_AMCeNN_Top2_v2_Colab.ipynb",
+      "reason": "Legacy/ablation family in MODEL_STATUS.md"
+    },
+    {
+      "from": "notebooks/SmolLM2_AMCeNN_Adaptive_v4_Colab.ipynb",
+      "to": "notebooks/archive/amcenn/SmolLM2_AMCeNN_Adaptive_v4_Colab.ipynb",
+      "reason": "Legacy/ablation family in MODEL_STATUS.md"
+    },
+    {
+      "from": "notebooks/CeNN_PDelta2_Error_Residual_Layer_Colab.ipynb",
+      "to": "notebooks/archive/pdelta/CeNN_PDelta2_Error_Residual_Layer_Colab.ipynb",
+      "reason": "Legacy/ablation family in MODEL_STATUS.md"
+    },
+    {
+      "from": "notebooks/CeNN_PDelta2_Flash_Layer_Colab.ipynb",
+      "to": "notebooks/archive/pdelta/CeNN_PDelta2_Flash_Layer_Colab.ipynb",
+      "reason": "Legacy/ablation family in MODEL_STATUS.md"
+    },
+    {
+      "from": "notebooks/CeNN_PDelta2_ER2_Long_Context_Colab.ipynb",
+      "to": "notebooks/archive/pdelta/CeNN_PDelta2_ER2_Long_Context_Colab.ipynb",
+      "reason": "Legacy/ablation family in MODEL_STATUS.md"
+    },
+    {
+      "from": "notebooks/CeNN_PDelta2_Feature_Lab_Colab.ipynb",
+      "to": "notebooks/archive/pdelta/CeNN_PDelta2_Feature_Lab_Colab.ipynb",
+      "reason": "Legacy/ablation family in MODEL_STATUS.md"
+    },
+    {
+      "from": "notebooks/CeNN_Preconditioned_Delta2_Beat_Transformer_Colab.ipynb",
+      "to": "notebooks/archive/pdelta/CeNN_Preconditioned_Delta2_Beat_Transformer_Colab.ipynb",
+      "reason": "Legacy/ablation family in MODEL_STATUS.md"
+    },
+    {
+      "from": "notebooks/CeNN_PDelta3_Frontier_Layer_Colab.ipynb",
+      "to": "notebooks/archive/pdelta/CeNN_PDelta3_Frontier_Layer_Colab.ipynb",
+      "reason": "Legacy/ablation family in MODEL_STATUS.md"
+    },
+    {
+      "from": "notebooks/CeNN_PDelta3_Tiny_LLM_Compatibility_Colab.ipynb",
+      "to": "notebooks/archive/pdelta/CeNN_PDelta3_Tiny_LLM_Compatibility_Colab.ipynb",
+      "reason": "Legacy/ablation family in MODEL_STATUS.md"
+    },
+    {
+      "from": "notebooks/SmolLM2_MemoryFusion_r48_r64_Colab.ipynb",
+      "to": "notebooks/archive/memoryfusion/SmolLM2_MemoryFusion_r48_r64_Colab.ipynb",
+      "reason": "Legacy/ablation family in MODEL_STATUS.md"
+    },
+    {
+      "from": "notebooks/Qwen35_08B_CeNNMixer_v1_Colab.ipynb",
+      "to": "notebooks/archive/superseded/Qwen35_08B_CeNNMixer_v1_Colab.ipynb",
+      "reason": "Earlier generation; newer notebook retained in active catalog"
+    },
+    {
+      "from": "notebooks/Qwen35_08B_CeNNMixer_v2_Progressive_Colab.ipynb",
+      "to": "notebooks/archive/superseded/Qwen35_08B_CeNNMixer_v2_Progressive_Colab.ipynb",
+      "reason": "Earlier generation; newer notebook retained in active catalog"
+    },
+    {
+      "from": "notebooks/Qwen35_08B_CeNNMixer_v3_GlobalMemory_Colab.ipynb",
+      "to": "notebooks/archive/superseded/Qwen35_08B_CeNNMixer_v3_GlobalMemory_Colab.ipynb",
+      "reason": "Earlier generation; newer notebook retained in active catalog"
+    },
+    {
+      "from": "notebooks/FlyFFN_SmolLM2_135M_Colab.ipynb",
+      "to": "notebooks/archive/superseded/FlyFFN_SmolLM2_135M_Colab.ipynb",
+      "reason": "Earlier generation; newer notebook retained in active catalog"
+    },
+    {
+      "from": "notebooks/Qwen35_08B_FlyCore_v1_Colab.ipynb",
+      "to": "notebooks/archive/superseded/Qwen35_08B_FlyCore_v1_Colab.ipynb",
+      "reason": "Earlier generation; newer notebook retained in active catalog"
+    },
+    {
+      "from": "notebooks/Qwen35_08B_FlyEmbedding_v3_Residual_Colab.ipynb",
+      "to": "notebooks/archive/superseded/Qwen35_08B_FlyEmbedding_v3_Residual_Colab.ipynb",
+      "reason": "Earlier generation; newer notebook retained in active catalog"
+    },
+    {
+      "from": "SmolLM2_AMCeNN_Hybrid_v3_Colab.ipynb",
+      "to": "notebooks/archive/amcenn/SmolLM2_AMCeNN_Hybrid_v3_Colab.ipynb",
+      "reason": "Legacy AMCeNN notebook moved out of repository root"
+    },
+    {
+      "from": "notebooks/Qwen35_08B_CeNNMixer_v4_DeltaCell_Colab.ipynb",
+      "to": "notebooks/archive/superseded/Qwen35_08B_CeNNMixer_v4_Alpha_Colab.ipynb",
+      "reason": "Old alpha-schedule notebook mismatches the current direct-training runner"
+    },
+    {
+      "from": "cennmixer-v4-runtime-training/notebooks/Qwen35_08B_CeNNMixer_v4_DeltaCell_Colab.ipynb",
+      "to": "notebooks/archive/superseded/Qwen35_08B_CeNNMixer_v4_Runtime_Branch_Colab.ipynb",
+      "reason": "Distinct older branch-pinned alpha experiment"
+    },
+    {
+      "from": "cenn-v4-context-quality/cennmixer-v4-runtime-training/notebooks/Qwen35_08B_CeNNMixer_v4_DeltaCell_Colab.ipynb",
+      "to": "notebooks/Qwen35_08B_CeNNMixer_v4_DeltaCell_Colab.ipynb",
+      "reason": "Canonical direct single-layer 1024-token notebook matching current runner"
+    }
+  ]
+}

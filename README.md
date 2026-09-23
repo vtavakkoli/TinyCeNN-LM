@@ -1,74 +1,46 @@
 # TinyCeNN-LM
 
-New experiment: **[nonlinear recurrent readout](NONLINEAR_READOUT.md)** with separate SmolLM2-135M and Qwen3.5-0.8B Colabs, shared 0/1/2-step refinement, cached decoding, and quality/speed/memory comparisons. GPU results are not yet established.
+**A research lab for compact recurrent memory and selective Transformer-layer replacement.**
 
-**Researching CeNN/recurrent-memory alternatives to selected Transformer attention layers without throwing away pretrained language-model capability.**
+[Notebook catalog](notebooks/README.md) · [Model status](MODEL_STATUS.md) · [Architecture guide](NONLINEAR_READOUT.md) · [Archived experiments](notebooks/archive/README.md)
 
-TinyCeNN-LM has grown from the original Tiny-LLM CeNN adapter into a model-replacement research lab spanning **SmolLM2, Qwen3.5, FunctionGemma and Gemma 4**. The repository intentionally keeps negative results and ablations, but they are no longer all equal entry points.
+Explore CeNN, integrated memory, delta-memory and compact feed-forward replacements on **SmolLM2, Qwen3.5, FunctionGemma, Gemma 4 and Laya / ModernBERT**. The goal is to preserve pretrained capability while measuring the quality, memory and latency trade-offs of each replacement.
 
-> **Start here:** [`MODEL_STATUS.md`](MODEL_STATUS.md) is the canonical model-zoo guide. [`notebooks/README.md`](notebooks/README.md) lists the notebooks that should be used first.
+## Choose a starting point
 
-## Current research tracks
-
-| Track | Role | Start here |
+| Goal | Track | Notebook |
 |---|---|---|
-| **Qwen3.5 Integrated Memory V2.2** | Strongest validated quality/efficiency track; conservative replacement rather than replacing every attention layer | [`Qwen3_5_0_8B_CeNN_Integrated_Memory_V2_2_Colab.ipynb`](notebooks/Qwen3_5_0_8B_CeNN_Integrated_Memory_V2_2_Colab.ipynb) |
-| **SmolLM2 PDelta3-GDN2-CLVR + Local32** | Strongest current attention-replacement research direction | [`SmolLM2_PDelta3_CLVR_Sequential_Optimization_Colab.ipynb`](notebooks/SmolLM2_PDelta3_CLVR_Sequential_Optimization_Colab.ipynb) |
-| **SmolLM2 Integrated Memory V3** | Stable compact quality-preservation/cache-efficiency reference | [`SmolLM2_Integrated_Memory_V3_Colab.ipynb`](notebooks/SmolLM2_Integrated_Memory_V3_Colab.ipynb) |
-| **FunctionGemma Integrated Memory V2** | Specialized tool-calling experiment | [`FunctionGemma_270M_CeNN_Integrated_Memory_V2_Colab.ipynb`](notebooks/FunctionGemma_270M_CeNN_Integrated_Memory_V2_Colab.ipynb) |
-| **Gemma 4 E2B Integrated Memory V2** | New experimental target with corrected text-checkpoint loading; not yet promoted to a validated winner | [`Gemma4_E2B_CeNN_Integrated_Memory_V2_Colab.ipynb`](notebooks/Gemma4_E2B_CeNN_Integrated_Memory_V2_Colab.ipynb) |
+| Qwen quality and cache efficiency | Integrated Memory V2.2 · core reference | [Open](notebooks/Qwen3_5_0_8B_CeNN_Integrated_Memory_V2_2_Colab.ipynb) |
+| Selective SmolLM2 attention replacement | PDelta3-GDN2-CLVR + Local32 · core research | [Open](notebooks/SmolLM2_PDelta3_CLVR_Sequential_Optimization_Colab.ipynb) |
+| Compact SmolLM2 reference | Integrated Memory V3 · core reference | [Open](notebooks/SmolLM2_Integrated_Memory_V3_Colab.ipynb) |
+| Tool-calling behavior | FunctionGemma Integrated Memory V2 · specialized reference | [Open](notebooks/FunctionGemma_270M_CeNN_Integrated_Memory_V2_Colab.ipynb) |
+| Typed decisions on Laya | Integrated Memory, PDelta3 and MemoryFusion · experimental | [Choose a notebook](notebooks/README.md#laya--modernbert) |
+| Direct compact-mixer training | CeNNMixer-v4 · experimental, one layer, 1024 tokens | [Open](notebooks/Qwen35_08B_CeNNMixer_v4_DeltaCell_Colab.ipynb) |
+| Nonlinear recurrent refinement | SmolLM2 / Qwen R0–R2 comparisons · experimental | [Read the protocol](NONLINEAR_READOUT.md) |
 
-## Laya / ModernBERT replacement lab
+**[Browse all 41 current notebook entries →](notebooks/README.md)** Each entry has a direct Colab link. The [27 archived notebooks](notebooks/archive/README.md) preserve superseded models, ablations and historical runs without cluttering the active list.
 
-Three Colab experiments adapt the current TinyCeNN replacement ideas to the bidirectional
-ModernBERT encoder used by `convaiinnovations/laya`. They keep Laya's tokenizer and typed
-decision head unchanged, distill replacement attention from the untouched Laya teacher, and
-accept layers sequentially using both representation fidelity and Laya decision-level gates.
+Core designations reflect the existing [model-status record](MODEL_STATUS.md), not new validation from this cleanup. A partial accepted run is not a complete replacement, and a smaller model is not necessarily faster.
 
-- [Laya Integrated Memory V2.2](notebooks/Laya_Integrated_Memory_V22_Colab.ipynb)
-- [Laya PDelta3-GDN2-CLVR](notebooks/Laya_PDelta3_GDN2_CLVR_Colab.ipynb)
-- [Laya Memory Fusion](notebooks/Laya_MemoryFusion_Colab.ipynb)
+## How experiments are evaluated
 
-These are new encoder experiments, not yet validated winners. The PDelta3 implementation is a
-bidirectional forward/reverse adaptation rather than a claim that the causal-LM recurrence can be
-transferred unchanged.
+1. Keep an untouched pretrained teacher as the reference.
+2. Train a candidate replacement and measure representation fidelity.
+3. Accept layers sequentially only when model-level quality gates pass.
+4. Restore the native layer when a candidate fails its gate.
+5. Compare held-out quality, memory, cache usage and measured latency.
 
-## Active experiments, not headline models
+The direct CeNNMixer-v4 experiment starts with one compact layer rather than an alpha curriculum; its own quality gates still control release. Laya experiments preserve the tokenizer and typed-decision head and evaluate bidirectional encoder replacements. Neither track is promoted to a validated winner merely by being included here.
 
-The Qwen3.5 MemoryFusion and PDelta3 notebooks, and the Gemma 4 Integrated Memory V2/PDelta3 notebooks, are active research. They stay in the repository because their results are useful, but an incomplete strict-gate run must not be presented as proof that the adapted model is better than the base model.
+## Architecture families
 
-Full 30-layer SmolLM2 MemoryFusion, AMCeNN, PDelta2, the original Tiny-LLM adapter, story/anti-repeat and other early notebooks are **legacy/ablation tracks**. They remain available for reproducibility and negative-result analysis; see [`MODEL_STATUS.md`](MODEL_STATUS.md) before publishing or citing one as a recommended checkpoint.
-
-## Research rule: selective replacement first
-
-The strongest recent results support a more conservative principle than the original “replace everything” experiments:
-
-1. identify attention layers that are good replacement candidates;
-2. train one replacement at a time;
-3. gate acceptance using representation similarity and model-level loss criteria;
-4. keep the pretrained/native mechanism when a candidate fails the gate;
-5. evaluate the accepted model on data or tasks that were not used to train the replacement;
-6. measure quality **and** the efficiency benefit (cache, memory, latency and trainable parameters).
-
-This makes failed replacements informative rather than allowing one bad layer to contaminate an entire model.
-
-## Main architecture families
-
-### Integrated Memory
-
-Conservative selective replacement designed to preserve pretrained behavior while reducing the cost of a subset of attention layers. This is currently the strongest complete quality-preservation path in the repository.
-
-### PDelta3-GDN2-CLVR
-
-A recurrent/delta-memory replacement direction combining local CeNN computation with editable global memory and sequential acceptance. This is the main architecture-research track when the goal is to replace attention rather than simply augment it.
-
-### MemoryFusion
-
-Combines local cellular/multiscale processing with global recurrent memory. It remains scientifically useful, especially in strict sequential experiments, but the old full-replacement r48/r64 checkpoints are not the recommended model path.
-
-### AMCeNN / Top-2 and original TinyCeNN
-
-Earlier architecture generations. Keep them for comparisons and reproducibility, not as the default starting point for new experiments.
+| Family | Purpose | Status |
+|---|---|---|
+| Integrated Memory | Conservative replacements that preserve pretrained behavior | Core references and model-specific experiments |
+| PDelta3-GDN2-CLVR | Local cellular processing with editable recurrent memory | Selective replacement research |
+| MemoryFusion | Local multiscale processing plus global recurrent memory | Active sequential experiments; old full-replacement runs archived |
+| CeNNMixer / FlyFFN / FlyEmbedding / FlyCore | Compact mixer, feed-forward and embedding experiments | Experimental; see the notebook catalog |
+| Original TinyCeNN / AMCeNN / PDelta2 | Earlier architectures and negative-result comparisons | Archived entry points; implementations retained for reproducibility |
 
 ## Installation
 
@@ -95,7 +67,9 @@ The repository contains targeted regression tests for the SmolLM2, Qwen3.5 and G
 ```text
 src/tinycenn_lm/   architecture implementations
 scripts/           training, acceptance, benchmark and evaluation runners
-notebooks/         Colab experiments; see notebooks/README.md first
+notebooks/         all current Colab entry points and their catalog
+notebooks/archive/ historical and superseded experiments
+docs/              notebook migration guide and machine-readable path map
 tests/             regression and architecture tests
 MODEL_STATUS.md    canonical keep/archive/publication status
 ```
@@ -115,10 +89,10 @@ Experimental checkpoints are published under [`vtava`](https://huggingface.co/vt
 
 Do not call a checkpoint “best” merely because it is the newest upload. Promote it only after its evaluation is stronger or its efficiency/quality trade-off is clearly better than the current reference.
 
-## Original TinyCeNN-LM work
+## Research history
 
-The first TinyCeNN-LM experiments used `arnir0/Tiny-LLM` and a causal CeNN residual state core, followed by Transformer-free distillation, sharded MoE, story/anti-repeat and PDelta experiments. Those implementations and documents remain in the repository for reproducibility, but they are now the **legacy track**, not the primary project description.
+Earlier notebooks are explicitly labeled as archived. Shared architecture implementations, training runners and regression tests stay available for comparisons. See the [migration guide](docs/NOTEBOOK_MIGRATION.md) for moved paths and the original revision.
 
 ## License
 
-MIT
+[MIT](LICENSE)

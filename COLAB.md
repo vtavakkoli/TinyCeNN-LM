@@ -12,17 +12,17 @@ and measured kernel timing. See the [research protocol](RESEARCH_LAYERS.md).
 
 
 **Continuing a dense CeNN student that plateaued after 10M tokens?** Use
-[TinyCeNN_Optimized_Continue_Colab.ipynb](notebooks/TinyCeNN_Optimized_Continue_Colab.ipynb)
+[TinyCeNN_Optimized_Continue_Colab.ipynb](notebooks/archive/original/TinyCeNN_Optimized_Continue_Colab.ipynb)
 and the [continuation guide](CONTINUATION.md). This is the Transformer-free
 distillation path; the original adapter notebook below retains the Transformer.
 
 The ready-to-run notebook is:
 
-`notebooks/TinyCeNN_LM_Colab.ipynb`
+`notebooks/archive/original/TinyCeNN_LM_Colab.ipynb`
 
 Open it directly in Colab:
 
-https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/TinyCeNN_LM_Colab.ipynb
+https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/archive/original/TinyCeNN_LM_Colab.ipynb
 
 ## What the notebook does
 

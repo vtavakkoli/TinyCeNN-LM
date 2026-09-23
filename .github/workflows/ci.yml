@@ -25,36 +25,8 @@ jobs:
         run: python -m compileall -q src scripts tests
       - name: Shell syntax check
         run: bash -n scripts/docker_train.sh
-      - name: Notebook JSON, code-cell, and credential check
-        run: |
-          python - <<'PY'
-          import json
-          import re
-          from pathlib import Path
-
-          paths = sorted(Path("notebooks").glob("*.ipynb"))
-          assert paths, "No notebooks found"
-          for path in paths:
-              source = path.read_text(encoding="utf-8")
-              notebook = json.loads(source)
-              assert notebook["nbformat"] == 4
-              leaked = re.findall(r"hf_[A-Za-z0-9]{24,}", source)
-              assert not leaked, f"HF token-like credential embedded in {path}"
-              for index, cell in enumerate(notebook.get("cells", [])):
-                  if cell.get("cell_type") != "code":
-                      continue
-                  cell_source = "".join(cell.get("source", []))
-                  cleaned_lines = []
-                  for line in cell_source.splitlines():
-                      stripped = line.lstrip()
-                      if stripped.startswith(("!", "%")):
-                          indent = line[: len(line) - len(stripped)]
-                          cleaned_lines.append(indent + "pass")
-                      else:
-                          cleaned_lines.append(line)
-                  compile("\n".join(cleaned_lines), f"{path.name}:cell_{index}", "exec")
-              print(f"validated {path}")
-          PY
+      - name: Notebook catalog, JSON, code-cell, and credential check
+        run: python scripts/check_notebook_catalog.py
       - name: Docker Compose syntax check
         run: |
           docker compose config --quiet
