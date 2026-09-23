@@ -42,6 +42,17 @@ def run_experiment(cfg: LayaLabConfig):
     test_ds = _load_typed_split("test")
     model_max_len = int(teacher.cfg.get("max_len", settings["train_max_len"]))
     train_max_len = min(int(settings["train_max_len"]), model_max_len)
+    functional = cfg.architecture == "integrated_memory_v22" and cfg.integrated_functional_training
+    if cfg.target_all_attention and cfg.architecture != "integrated_memory_v22":
+        raise ValueError("target_all_attention is supported here only for integrated_memory_v22")
+    if sum((bool(cfg.target_layers), cfg.target_all_full_attention, cfg.target_all_attention)) > 1:
+        raise ValueError("choose one target policy")
+    probe_items = None
+    if functional:
+        from .pdelta_optimized import _split_transfer_rows
+        fit_rows, probe_rows = _split_transfer_rows(list(train_ds), cfg.seed)
+        train_ds = fit_rows
+        probe_items = build_training_items(teacher, probe_rows, len(probe_rows), train_max_len, cfg.seed)
     train_items = build_training_items(
         teacher, train_ds, settings["train_cases"], train_max_len, cfg.seed
     )
@@ -51,8 +62,10 @@ def run_experiment(cfg: LayaLabConfig):
         "| train max length:",
         train_max_len,
     )
-    gate_cases = dataset_cases(test_ds, settings["gate_cases"])
-    final_cases = dataset_cases(test_ds, settings["final_cases"])
+    from .pdelta_optimized import _stratified_disjoint_cases
+    gate_cases, final_cases = _stratified_disjoint_cases(
+        test_ds, settings["gate_cases"], settings["final_cases"], cfg.seed)
+
     teacher_gate = evaluate_agent(teacher, gate_cases, label="teacher")
     print("Teacher gate accuracy:", round(teacher_gate["accuracy"], 4))
 
@@ -61,7 +74,11 @@ def run_experiment(cfg: LayaLabConfig):
             "Use either target_layers or target_all_full_attention, not both"
         )
 
-    if cfg.target_all_full_attention:
+    if cfg.target_all_attention:
+        candidates = list(range(len(student.model.encoder.layers)))
+        # Convert in execution order so later modules can learn compensation
+        # for the accepted upstream replacements during decision distillation.
+    elif cfg.target_all_full_attention:
         if cfg.architecture != "integrated_memory_v22":
             raise ValueError(
                 "target_all_full_attention is currently supported only for "
@@ -90,17 +107,6 @@ def run_experiment(cfg: LayaLabConfig):
             raise ValueError(
                 f"target_layers contains invalid ModernBERT layer indices: {invalid}"
             )
-        if cfg.architecture == "integrated_memory_v22":
-            non_full = [
-                i for i in candidates
-                if str(student.model.encoder.layers[i].attention_type)
-                != "full_attention"
-            ]
-            if non_full:
-                raise ValueError(
-                    "Integrated Memory V2.2 target_layers must be "
-                    f"full-attention layers; got {non_full}"
-                )
     elif cfg.architecture == "integrated_memory_v22":
         candidates = choose_candidate_layers(
             student.model,
@@ -129,9 +135,16 @@ def run_experiment(cfg: LayaLabConfig):
             f"\n=== {cfg.architecture}: layer {idx} "
             f"({student.model.encoder.layers[idx].attention_type}) ==="
         )
-        replacement, local = train_one_replacement(
-            teacher, idx, cfg, train_items, train_steps, settings["batch_size"]
-        )
+        if functional:
+            from .integrated_train import train_integrated_replacement
+            replacement, local = train_integrated_replacement(
+                teacher, student, idx, cfg, train_items, probe_items,
+                train_steps, settings["batch_size"])
+        else:
+            replacement, local = train_one_replacement(
+                teacher, idx, cfg, train_items, train_steps, settings["batch_size"])
+        if cfg.architecture == "integrated_memory_v22":
+            replacement.requires_grad_(False)
         old = student.model.encoder.layers[idx].attn
         student.model.encoder.layers[idx].attn = replacement.to(student.device)
         student.model.eval()
@@ -211,14 +224,22 @@ def run_experiment(cfg: LayaLabConfig):
         "mode": cfg.mode,
         "candidate_layers": candidates,
         "target_policy": (
-            "all_full_attention"
+            "all_attention"
+            if cfg.target_all_attention
+            else "all_full_attention"
             if cfg.target_all_full_attention
             else "explicit_layers"
             if cfg.target_layers
             else "auto_shortlist"
         ),
         "accepted_layers": replaced_layers(student.model),
-        "replacement_trainable_parameters": replacement_parameters(student.model),
+        "replacement_trainable_parameters": (
+            sum(p.numel() for i in replaced_layers(student.model)
+                for name, p in student.model.encoder.layers[i].attn.named_parameters()
+                if not name.startswith(("Wqkv.", "Wo.", "out_drop.")))
+            if cfg.architecture == "integrated_memory_v22"
+            else replacement_parameters(student.model)
+        ),
         "training_steps_per_candidate": train_steps,
         "history": history,
         "teacher_final": teacher_final,
@@ -228,7 +249,7 @@ def run_experiment(cfg: LayaLabConfig):
         "note": (
             (
                 "Laya uses a bidirectional ModernBERT encoder. Integrated Memory V2.2 "
-                "uses learned attention transfer and tries full-attention layers first; "
+                "supports full and sliding kernels with optional cumulative decision transfer; "
                 "these results are not interchangeable with causal-LM conversions."
             )
             if cfg.architecture == "integrated_memory_v22"
@@ -243,6 +264,18 @@ def run_experiment(cfg: LayaLabConfig):
             )
         ),
     }
+    accepted = set(report["accepted_layers"])
+    report["target_acceptance_rate"] = len(accepted.intersection(candidates)) / max(1, len(candidates))
+    report["all_targets_replaced"] = bool(candidates) and set(candidates).issubset(accepted)
+    report["remaining_attention_layers"] = [i for i in range(len(student.model.encoder.layers)) if i not in accepted]
+    report["all_attention_replaced"] = not report["remaining_attention_layers"]
+    report["final_quality_checks"] = {
+        "teacher_agreement": student_final.get("teacher_agreement", 0) >= cfg.min_teacher_agreement,
+        "teacher_kl": student_final.get("mean_teacher_kl", float("inf")) <= cfg.max_mean_kl,
+        "accuracy_drop": teacher_final["accuracy"] - student_final["accuracy"] <= cfg.max_accuracy_drop,
+    }
+    report["final_quality_passed"] = all(report["final_quality_checks"].values())
+    report["evaluation_split"] = "disjoint_stratified_gate_and_final"
     report["conversion_succeeded"] = bool(report["accepted_layers"])
     report["student_is_unmodified_teacher"] = not report["conversion_succeeded"]
     torch.save(adapter_payload(student.model, cfg, report), out_dir / "adapter.pt")

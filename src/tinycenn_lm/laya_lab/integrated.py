@@ -30,6 +30,14 @@ class IntegratedMemoryV22Attention(BaseLayaReplacementAttention):
         local_kernel: int = 5,
     ):
         super().__init__(original)
+        self.sliding_window = getattr(original, "sliding_window", None)
+        if self.sliding_window is not None:
+            radius = getattr(original.config, "sliding_window", None)
+            if radius is None and hasattr(original.config, "local_attention"):
+                radius = original.config.local_attention // 2
+            self.sliding_window = int(radius if radius is not None else self.sliding_window)
+            if self.sliding_window < 0:
+                raise ValueError("sliding window radius must be nonnegative")
         self.feature_dim = int(feature_dim)
         self.local_kernel = int(local_kernel)
 
@@ -95,23 +103,37 @@ class IntegratedMemoryV22Attention(BaseLayaReplacementAttention):
         kf = self._project_features(k, self.wk) * mask
         vf = v.float() * mask
 
-        # Bidirectional linear attention:
-        # phi(Q) [phi(K)^T V] / phi(Q) [phi(K)^T 1]
-        memory = torch.einsum("bhtf,bhtd->bhfd", kf, vf)
-        normalizer = kf.sum(dim=2)
-        numerator = torch.einsum("bhtf,bhfd->bhtd", qf, memory)
-        denominator = torch.einsum(
-            "bhtf,bhf->bht",
-            qf,
-            normalizer,
-        ).unsqueeze(-1)
-        global_out = numerator / denominator.clamp_min(1e-6)
+        if self.sliding_window is None:
+            # Full-attention memory retains linear sequence complexity.
+            memory = kf.transpose(-1, -2) @ vf
+            numerator = qf @ memory
+            denominator = (qf * kf.sum(dim=2, keepdim=True)).sum(-1, keepdim=True)
+            global_out = numerator / denominator.clamp_min(1e-6)
+        else:
+            # Bounded query chunks: no T*T or T*F*D allocation. Respect the
+            # inclusive native window and any additional supplied pair mask.
+            outputs = []
+            t, radius = q.shape[2], self.sliding_window
+            for start in range(0, t, 64):
+                end = min(start + 64, t)
+                lo, hi = max(0, start - radius), min(t, end + radius)
+                weights = qf[:, :, start:end] @ kf[:, :, lo:hi].transpose(-1, -2)
+                qp = torch.arange(start, end, device=q.device)
+                kp = torch.arange(lo, hi, device=q.device)
+                allowed = ((qp[:, None] - kp[None, :]).abs() <= radius)[None, None]
+                if attention_mask is not None and attention_mask.ndim == 4:
+                    pair_mask = attention_mask[..., start:end, lo:hi]
+                    allowed = allowed & (pair_mask if pair_mask.dtype == torch.bool else pair_mask > -1e4)
+                weights = weights * allowed
+                outputs.append((weights / weights.sum(-1, keepdim=True).clamp_min(1e-6)) @ vf[:, :, lo:hi])
+            global_out = torch.cat(outputs, dim=2)
 
-        local_out = _depthwise_sequence_conv(
-            v.float(),
-            self.local_weight,
-            causal=False,
-        ) * mask
+        # Mask BEFORE convolution: padded values must not affect valid tokens.
+        local_weight = self.local_weight
+        if self.sliding_window is not None:
+            offsets = torch.arange(self.local_kernel, device=v.device) - (self.local_kernel - 1) // 2
+            local_weight = local_weight * (offsets.abs() <= self.sliding_window)
+        local_out = _depthwise_sequence_conv(vf, local_weight, causal=False) * mask
         direct_out = v.float() * mask
 
         mix = torch.softmax(self.mix_logits.float(), dim=-1)
@@ -128,6 +150,7 @@ class IntegratedMemoryV22Attention(BaseLayaReplacementAttention):
     def config_dict(self):
         d = super().config_dict()
         d.update(
+            sliding_window=self.sliding_window,
             feature_dim=self.feature_dim,
             effective_feature_dim=2 * self.feature_dim,
             local_kernel=self.local_kernel,
