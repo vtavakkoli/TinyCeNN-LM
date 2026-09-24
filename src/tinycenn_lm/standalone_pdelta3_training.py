@@ -39,12 +39,12 @@ class PDelta3TrainConfig:
     seed: int = 2026
     feature_dim: int = 96
     local_window: int = 32
-    encoder_steps: int = 60
-    head_steps: int = 40
-    joint_steps: int = 180
-    train_cases: int = 650
-    val_cases: int = 160
-    max_len: int = 320
+    encoder_steps: int = 120
+    head_steps: int = 80
+    joint_steps: int = 300
+    train_cases: int = 900
+    val_cases: int = 200
+    max_len: int = 384
     batch_size: int = 3
     output_dir: str = "/content/PDelta3_GDN2_Standalone_Decision"
 
