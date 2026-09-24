@@ -451,7 +451,8 @@ def _joint(teacher, student, train, val, tokenizer, cfg, device, amp, dtype):
         ):
             teacher_logits, teacher_act = teacher(**batch)
 
-        student.train()
+        # eval() keeps distillation deterministic while gradients stay enabled.
+        student.eval()
         for module in pdelta_modules(student):
             module.out_drop.eval()
         opt.zero_grad(set_to_none=True)
