@@ -31,7 +31,7 @@ The core labels carry forward the existing model-status guide; this reorganizati
 | [Laya Integrated Memory V23 Decision](Laya_Integrated_Memory_V23_Decision_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_Integrated_Memory_V23_Decision_Colab.ipynb) |
 | [Laya MemoryFusion](Laya_MemoryFusion_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_MemoryFusion_Colab.ipynb) |
 | [Laya PDelta3 GDN2 CLVR](Laya_PDelta3_GDN2_CLVR_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_PDelta3_GDN2_CLVR_Colab.ipynb) |
-| [Laya PDelta3 GDN2 Standalone Decision](Laya_PDelta3_GDN2_Standalone_Decision_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/codex/pdelta3-standalone-decision/notebooks/Laya_PDelta3_GDN2_Standalone_Decision_Colab.ipynb) |
+| [Laya PDelta3 GDN2 Standalone Decision](Laya_PDelta3_GDN2_Standalone_Decision_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_PDelta3_GDN2_Standalone_Decision_Colab.ipynb) |
 
 ## Qwen3.5 experiments
 
