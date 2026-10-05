@@ -1,6 +1,6 @@
 # Notebook catalog
 
-All **68 notebooks** live under this directory: **41 current entries** and **27 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
+All **69 notebooks** live under this directory: **42 current entries** and **27 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
 
 [Project overview](../README.md) · [Model status](../MODEL_STATUS.md) · [Archived notebooks](archive/README.md) · [Path migration](../docs/NOTEBOOK_MIGRATION.md)
 
@@ -25,8 +25,11 @@ The core labels carry forward the existing model-status guide; this reorganizati
 
 ## Laya / ModernBERT
 
+**V2.5:** all encoder attention is replaced with local Delta/global CeNN, followed by a pooled MLP head. Training stages match V2.4; passing models can be uploaded to Hugging Face. [Architecture, evaluation gate and limitations](../docs/LAYA_V25.md).
+
 | Notebook | Run |
 |---|---|
+| [Laya V2.5 Windowed Delta + CeNN Decision](Laya_Integrated_Memory_V25_WindowDelta_CeNN_Decision_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/codex/laya-v25-window-delta-cenn/notebooks/Laya_Integrated_Memory_V25_WindowDelta_CeNN_Decision_Colab.ipynb) |
 | [Laya Integrated Memory V22](Laya_Integrated_Memory_V22_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_Integrated_Memory_V22_Colab.ipynb) |
 | [Laya Integrated Memory V23 Decision](Laya_Integrated_Memory_V23_Decision_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_Integrated_Memory_V23_Decision_Colab.ipynb) |
 | [Laya MemoryFusion](Laya_MemoryFusion_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_MemoryFusion_Colab.ipynb) |

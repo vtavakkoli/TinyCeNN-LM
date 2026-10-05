@@ -6,6 +6,8 @@
 
 Explore CeNN, integrated memory, delta-memory and compact feed-forward replacements on **SmolLM2, Qwen3.5, FunctionGemma, Gemma 4 and Laya / ModernBERT**. The goal is to preserve pretrained capability while measuring the quality, memory and latency trade-offs of each replacement.
 
+**New V2.5 experiment:** [Windowed Delta + multiscale CeNN for Laya](docs/LAYA_V25.md), retaining V2.4 training stages with conditional Hugging Face export. Full GPU results are pending.
+
 ## Choose a starting point
 
 | Goal | Track | Notebook |
@@ -18,7 +20,7 @@ Explore CeNN, integrated memory, delta-memory and compact feed-forward replaceme
 | Direct compact-mixer training | CeNNMixer-v4 · experimental, one layer, 1024 tokens | [Open](notebooks/Qwen35_08B_CeNNMixer_v4_DeltaCell_Colab.ipynb) |
 | Nonlinear recurrent refinement | SmolLM2 / Qwen R0–R2 comparisons · experimental | [Read the protocol](NONLINEAR_READOUT.md) |
 
-**[Browse all 41 current notebook entries →](notebooks/README.md)** Each entry has a direct Colab link. The [27 archived notebooks](notebooks/archive/README.md) preserve superseded models, ablations and historical runs without cluttering the active list.
+**[Browse all 42 current notebook entries →](notebooks/README.md)** Each entry has a direct Colab link. The [27 archived notebooks](notebooks/archive/README.md) preserve superseded models, ablations and historical runs without cluttering the active list.
 
 Core designations reflect the existing [model-status record](MODEL_STATUS.md), not new validation from this cleanup. A partial accepted run is not a complete replacement, and a smaller model is not necessarily faster.
 
