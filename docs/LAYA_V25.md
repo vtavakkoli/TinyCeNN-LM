@@ -1,67 +1,80 @@
-# Laya V2.5: windowed Delta and multiscale recurrent CeNN
+# Laya V2.5: sliding CeNN and multiscale recurrent CeNN
 
 [Run in Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_Integrated_Memory_V25_WindowDelta_CeNN_Decision_Colab.ipynb)
 
-Status: a saved T4 run passed the FLA preflight and all 28 local transfers, but developed NaNs during recovery. The corrected recovery revision is CPU-tested; a new full GPU run is required. The notebook contains no inherited outputs. The shared recovery fixes also update V2.4; neither canonical notebook contains old results presented as new measurements.
+The canonical notebook now trains sliding CeNN instead of windowed Delta. Its filename stays unchanged to preserve links. This revision is CPU-tested; full GPU accuracy, convergence and latency remain unmeasured. The notebook clears historical outputs and uses a new output directory, `/content/Laya_V25_SlidingCeNN`.
+
+## Latest saved run and motivation
+
+The [2026-10-06 Delta run](../notebooks/archive/Laya_V25_Delta_recovery_20261006.ipynb) passed FLA preflight and completed all 28 local transfers. Recovery stayed finite, with an AMP overflow correctly skipped. It reached 55.6% teacher agreement at the final step; the selected checkpoint had 55.4% agreement and 0.06993 mean JS. Sliding layer 25 remained a weak local fit (cosine 0.7055, NMSE 0.5320). Gold training was saved only through step 200, so this run has no completed held-out test or speed result. These results support testing a different local mixer; they do not establish that the Delta implementation was broken.
+
+The [earlier T4 run](../notebooks/archive/Laya_V25_T4_failed_recovery_20261005.ipynb) developed NaNs in recovery before the numerical safeguards were added. Both historical notebooks preserve their original outputs.
 
 ## Architecture
 
-| Component | V2.5 |
+| Component | Current V2.5 replacement |
 |---|---|
-| Sliding encoder attention | Bidirectional Gated Delta in independent 128-token windows, stride 64, overlap-add output |
-| Global encoder attention | CeNN with trainable input/output projections, fixed scales 1/4/16, two leaky recurrent updates, and global masked-context broadcast |
+| Sliding encoder attention | SlidingCeNN: 384 cell channels, bidirectional templates, two recurrent updates, maximum context offset ±64 tokens |
+| Global encoder attention | MultiscaleCeNN: 256 channels, scales 1/4/16, two recurrent updates, global masked-context broadcast |
 | Final decision head | Shared option MLP conditioned on CLS, sequence mean and option mean |
-| Encoder FFNs / norms / residuals | Preserved from the source checkpoint |
+| Encoder FFNs, norms and residuals | Preserved from the source checkpoint |
 
-Window states start at zero in each direction. This is an overlapping-chunk approximation, not exact sliding-window attention. Each token receives two window outputs. No state wraps from the sequence end to its start. Padding has neutral Delta updates and is excluded from CeNN/head pooling. CeNN uses fixed pooling bins so adding batch padding does not move cell boundaries. Its bounded local feedback template and sigmoid leak implement recurrent cellular updates, while the global drive carries whole-sequence context; it does not implement exact content-addressable attention.
+SlidingCeNN projects each token into a trainable cellular state space. Value channels transferred from the teacher are spread across attention heads, and both input/output projections are trainable. The input is normalized and masked before spatial mixing. Starting from zero state, the cellular update is
 
-`LinearMaskEncoder` preserves the pretrained FFN/residual computation but bypasses the native quadratic attention-mask builder. All encoder layers must be converted before it can be installed. The final module audit also rejects a remaining Transformer decision head.
+`x_next = (1 − eta) * x + eta * tanh(A * x + B * u + bias)`.
 
-## Training protocol after the recovery fix
+Here `*` is a depthwise sliding convolution and `eta` is a learned sigmoid leak. Each channel's feedback template A has L1 norm at most 0.9, so its recurrent feedback is contractive for fixed input and parameters. This bound does not guarantee stable optimization or higher accuracy. B is a learned input template; a learned pointwise readout path preserves unsaturated token information before the output projection. Recurrent accumulation and template normalization use FP32 under AMP.
+
+With `window=128` and two updates, A and B each have radius 32 (65 taps). The complete layer has an exact maximum receptive-field radius of 64, or 129 positions including the center. It operates across the sequence without chunks, overlap-add, wrapping or a token-by-token scan. Relative positions are encoded by learned left/right template offsets. Masking after every update prevents padding states from feeding back into valid tokens. Appending padding or shifting a sequence with masked padding leaves its valid outputs unchanged.
+
+Global CeNN uses fixed pooling bins plus global masked pooling to provide distant context. The final `LinearMaskEncoder` bypasses the native quadratic attention-mask builder and skips unused RoPE computation for the all-CeNN path. No QK attention matrix, Delta recurrence, FLA kernel, or Transformer decision head is used by the final model. The original head remains only during intermediate recovery stages. Legacy Delta classes/configurations remain loadable for existing checkpoints.
+
+Sliding convolution work scales linearly with sequence length for fixed cell width, window and recurrence count. Actual speed depends on the GPU and kernels; the notebook measures it rather than assuming an improvement.
+
+## Training schedule
+
+At the user's request, **every normal and gold training phase starts at 0.01 and ends at 0.002**, using exact cosine decay without warmup. This applies to both core and head optimizer groups. Stage counts, batch size, data splits and the order of training are preserved. V2.4's separate configuration is unchanged.
 
 | Stage | Steps | Initial → final LR |
 |---|---:|---|
-| A: progressive local replacement | 400 per encoder layer | 0.01 → 0.0005 |
-| B: recovery with original decision head | 1600 | core 0.001 → 0.0001; head 0.0001 → 0.00001 |
-| C: direct gold supervision | 900 | core 0.0003 → 0.00003; head 0.00005 → 0.000005 |
-| Compact pooled head | 700 | 0.0008 → 0.00008 |
-| Compact joint recovery | 400 | core 0.0003 → 0.00003; head 0.0001 → 0.00001 |
-| Compact direct gold supervision | 700 | core 0.0003 → 0.00003; head 0.0001 → 0.00001 |
+| A: progressive local replacement | 400 per encoder layer | 0.01 → 0.002 |
+| B: teacher distillation with original head | 1600 | core and head: 0.01 → 0.002 |
+| C: direct gold supervision | 900 | core and head: 0.01 → 0.002 |
+| Compact pooled-head distillation | 700 | 0.01 → 0.002 |
+| Compact joint distillation | 400 | core and head: 0.01 → 0.002 |
+| Compact direct gold supervision | 700 | core and head: 0.01 → 0.002 |
 
-Step counts, split sizes, batch size and local-transfer cosine decay are retained. Recovery rates above are peaks after a short warmup (at most 20 steps). Stage B adds a 0.05-weight CLS/option-marker representation loss. Gold checkpoint selection is now accuracy-first, uses the whole dev set, and retains the stage-entry model if training does not improve it. Stage A now processes **all** encoder layers, increasing total training work. Core discovery includes both CeNN and Delta parameters even after a blanket parameter freeze. CeNN projections learn; inherited local Delta QKV/output projections remain frozen, matching the V2.4 projection policy. The original-head intermediate is kept for recovery/comparison, but is never eligible for upload.
+These rates are aggressive experimental settings, not evidence that learning will be faster or better. Shared safeguards reject non-finite losses/parameters, skip AMP gradient overflows with scale backoff, stop persistent overflow and clip gradients before updates. FP16 starts at scale 128. Every recovery/head phase retains the stage-entry dev checkpoint if later training does not improve its selection criterion. Gold selection is lexicographic accuracy, KL, then Brier on the full dev set. Stage B retains marker-representation alignment with weight 0.05.
 
-FP16 uses an initial scale of 128 and native-BF16 detection. Shared guarded updates reject non-finite losses, skip AMP gradient overflows with scale backoff, stop persistent overflow, and prevent non-finite validation scores from selecting a checkpoint. Stage A saves a safetensors checkpoint and checks source/configuration metadata before resuming. Keep OUTPUT_DIR on a persistent mount to survive Colab resets. Transformers 4.57.6 and FLA 0.5.2 are pinned. The notebook checks FLA forward agreement against an explicit reference recurrence and finite gradients on the actual GPU before expensive training. CPU reference scans are for correctness/debug only, never a silent CUDA performance fallback.
+Stage A saves safetensors with source revision, architecture and training metadata. Old Delta checkpoints are incompatible with this architecture and must not be resumed; the new output directory and metadata checks prevent accidental reuse. Set OUTPUT_DIR to a persistent mount to retain new progress across Colab sessions.
+
+Transformers 4.57.6 is pinned. Neither this notebook nor its all-CeNN export requires FLA. The preflight checks local/global CeNN forward agreement with FP32, padding invariance and finite gradients on the actual GPU/AMP dtype before training.
 
 ## Evaluation and conditional Hugging Face export
 
-The final model must meet all these defaults:
+The unchanged teacher and full/compact students are compared on the official test split after training. The final pooled-head model must meet all default gates:
 
-- Accuracy at most 0.02 below the unchanged teacher.
-- The paired 95% case-bootstrap lower bound also at least -0.02.
-- At least 1.10× median speedup, measured across the same five length-stratified dev batches for all models.
-- Finite quality metrics and matching paired evaluation sizes.
-- No original encoder attention or Transformer head modules.
-- Local save/reload logits and action outputs agree within the mixed-precision tolerance.
+- Accuracy no more than 0.02 below the teacher, including the paired 95% case-bootstrap lower bound.
+- At least 1.10× median speedup on the same five length-stratified dev batches.
+- Finite metrics and matching paired evaluation sizes.
+- No original encoder attention, Transformer head or Delta layers.
+- Local save/reload logits and action outputs agree within mixed-precision tolerance.
 
-`MAX_ACCURACY_DROP` and `MIN_SPEEDUP` are set before training. This gate is an engineering acceptance criterion, not proof of superiority. A rejected run retains its JSON report and skips upload. A passing run saves weights, tokenizer, architecture/source configuration, metrics, self-contained runtime files and a model card. It reloads without downloading the teacher before any Hub write.
+A rejected run saves its JSON report and skips upload. A passing run saves weights, tokenizer, architecture/source configuration, metrics, self-contained runtime files and a model card. The export reloads without downloading the teacher before any Hub write.
 
-`PUSH_TO_HUB=True` enables conditional upload. Leave `HF_REPO_ID` empty to use the authenticated account's `Laya-V25-WindowDelta-CeNN` model repository, or supply an authorized namespace. `HF_PRIVATE=True` is the default for new repositories; existing repository visibility is not changed. Authentication comes from the current Hugging Face session, a Colab `HF_TOKEN` secret, or interactive notebook login. No token is saved in outputs or artifacts.
+`PUSH_TO_HUB=True` enables conditional upload. With an empty `HF_REPO_ID`, the default destination is the authenticated account's `Laya-V25-SlidingCeNN` repository. New repositories are private by default; existing visibility is unchanged. Authentication uses the Hugging Face session, a Colab `HF_TOKEN` secret, or notebook login. Credentials are not included in artifacts.
 
-The export provides `load_v25`, not `AutoModel.from_pretrained` or a text-generation pipeline. Run from the downloaded directory with its included `tinycenn_lm` runtime, install `requirements.txt`, then:
+The export provides `load_v25`, not `AutoModel.from_pretrained` or a text-generation pipeline. Install its requirements and run from the downloaded directory:
 
 ```python
 from tinycenn_lm.decision_v25 import load_v25
-model = load_v25(".", device="cuda", backend="fla")
+model = load_v25(".", device="cuda")  # device="cpu" also supported, without FLA
 ```
 
-Pack typed decisions with `build_sequence`/`collate_items` from the bundled `standalone_decision` module; use CUDA autocast in the validated FP16/BF16 dtype. CPU loading is available with `backend="reference"` for correctness/debug.
+Pack typed decisions with `build_sequence`/`collate_items` from the bundled `standalone_decision` module. CUDA inference should use the validated FP16/BF16 autocast dtype.
 
-## Limits
+## Validation limits
 
-This is a bidirectional typed-decision encoder, not a causal language model or a pure CeNN. Gated Delta is a recurrent/linear-attention-family mechanism. The original official test split is held out during this notebook run, but it informed earlier V2.4 research; use a fresh external benchmark for publication validation. The source teacher's data provenance is not established here. Action-head outputs are distilled from the teacher, not validated against independent action labels. Latency excludes tokenization; activation peaks exclude resident model weights.
+Tests cover exact local support in both directions, no chunk-boundary artifacts, padding/empty-row isolation, finite mixed-precision gradients, a learned local operator at the requested rates, the actual notebook training stages on tiny CPU models, preserved FFNs, stage resume, and self-contained save/reload for both new CeNN and legacy Delta checkpoints. These establish implementation behavior, not benchmark superiority.
 
-## Diagnosed failure and remaining validation
-
-The executed V2.5 notebook was saved under `laya-v25-window-delta-cenn/notebooks/` on main. Its Stage B printed 250/264 finite gradient tensors at the first step, then NaN loss/JS by step 600. It continued through step 1600 and failed in Stage C with `non-finite direct gold loss`. The old loop only required at least one finite gradient and had no Stage B finite-loss guard. High recovery rates are a plausible contributor; a full GPU run is still needed to establish the numerical cause and measure corrected quality.
-
-The canonical notebooks now link/install from main. The executed notebook is preserved unchanged at [the archived T4 run](../notebooks/archive/Laya_V25_T4_failed_recovery_20261005.ipynb), satisfying the repository notebook placement check. The pip resolver warnings for unrelated preinstalled Gradio/Diffusers packages are separate from this observed training failure; use a fresh dedicated runtime for the pinned Transformers stack.
+This is a bidirectional typed-decision encoder, not a causal text generator. The official test split is held out within the notebook, but it informed earlier research iterations; publication claims require a fresh external benchmark. Teacher data provenance is not established here. Action outputs are distilled from the teacher rather than validated against independent action labels. Latency excludes tokenization; activation-memory measurements exclude resident weights.

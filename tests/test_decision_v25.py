@@ -9,13 +9,14 @@ from transformers import AutoModel, ModernBertConfig
 
 from tinycenn_lm.standalone_decision import StandaloneDecisionModel
 from tinycenn_lm.decision_v25 import (
-    WindowedBiDelta, MultiscaleCeNN, LinearMaskEncoder, PooledMarkerDecisionModel,
+    WindowedBiDelta, SlidingCeNN, MultiscaleCeNN, LinearMaskEncoder, PooledMarkerDecisionModel,
     attention_audit, core_parameters, layer_kinds, replacement_for,
     save_v25, load_v25, export_gate,
 )
 
 torch.set_num_threads(1)
-ARCH = dict(window=8, cell_dim=8, cell_steps=2, scales=[1, 2, 4], backend="reference")
+LEGACY_ARCH = dict(window=8, cell_dim=8, cell_steps=2, scales=[1, 2, 4], backend="reference")
+ARCH = {**LEGACY_ARCH, "local_mixer": "sliding_cenn", "sliding_cell_dim": 8, "sliding_steps": 2}
 
 
 def encoder():
@@ -26,15 +27,15 @@ def encoder():
     return AutoModel.from_config(cfg, attn_implementation="sdpa").eval()
 
 
-def converted_encoder():
+def converted_encoder(architecture=ARCH):
     enc = encoder()
     for layer, kind in zip(enc.layers, layer_kinds(enc)):
-        layer.attn = replacement_for(layer.attn, kind, ARCH)
+        layer.attn = replacement_for(layer.attn, kind, architecture)
     return enc
 
 
-def final_model():
-    source = StandaloneDecisionModel(LinearMaskEncoder(converted_encoder()), head_layers=0, n_act=2)
+def final_model(architecture=ARCH):
+    source = StandaloneDecisionModel(LinearMaskEncoder(converted_encoder(architecture)), head_layers=0, n_act=2)
     return PooledMarkerDecisionModel(source, compact_dim=8, layers=2).eval()
 
 
@@ -86,8 +87,9 @@ def test_global_cenn_has_distant_context_and_recurrent_template_gradient():
     assert block.template.grad.abs().sum() > 0
 
 
-def test_linear_mask_encoder_preserves_converted_native_computation_and_ffns():
-    enc = converted_encoder()
+@pytest.mark.parametrize("architecture", [ARCH, LEGACY_ARCH])
+def test_linear_mask_encoder_preserves_converted_native_computation_and_ffns(architecture):
+    enc = converted_encoder(architecture)
     ffn = enc.layers[0].mlp
     wrapped = LinearMaskEncoder(enc)
     assert wrapped.layers[0].mlp is ffn
@@ -130,15 +132,21 @@ class DummyTokenizer:
         (Path(path)/"tokenizer_config.json").write_text('{}')
 
 
-def test_checkpoint_roundtrip_without_teacher_or_network(tmp_path):
-    model = final_model()
+@pytest.mark.parametrize("architecture", [ARCH, LEGACY_ARCH])
+def test_checkpoint_roundtrip_without_teacher_or_network(tmp_path, architecture):
+    model = final_model(architecture)
     b = inputs()
     expected = model(**b)
-    save_v25(model, tmp_path, DummyTokenizer(), ARCH, {"source": "test"}, {"test": True})
+    save_v25(model, tmp_path, DummyTokenizer(), architecture, {"source": "test"}, {"test": True})
     loaded = load_v25(tmp_path, backend="reference")
     assert attention_audit(loaded)["passed"]
     for a, z in zip(expected, loaded(**b)):
         torch.testing.assert_close(a, z, rtol=0, atol=0)
+    if architecture.get("local_mixer") == "sliding_cenn":
+        assert attention_audit(loaded)["delta_free"]
+        assert "flash-linear-attention" not in (tmp_path/"requirements.txt").read_text()
+    else:
+        assert not attention_audit(loaded)["delta_free"]
     assert (tmp_path/"tinycenn_lm"/"decision_v25.py").exists()
     assert (tmp_path/"tinycenn_lm"/"standalone_decision.py").exists()
     # Verify the exported package in a fresh interpreter, not the repository import.
@@ -182,7 +190,21 @@ def test_notebook_preserves_schedules_and_has_no_saved_results():
                 if any(x in name for x in ('STEPS', '_LR', 'CASES')) or name in ('BATCH', 'MAX_LEN', 'COMPACT_DIM', 'COMPACT_LAYERS'):
                     out[name] = ast.literal_eval(node.value)
         return out
-    assert schedule(notebooks[0]) == schedule(notebooks[1])
+    old, new = (schedule(nb) for nb in notebooks)
+    assert {k:v for k,v in old.items() if '_LR' not in k} == {k:v for k,v in new.items() if '_LR' not in k}
+    assert all(v == (.002 if k.endswith('_MIN') else .01) for k,v in new.items() if '_LR' in k)
+    source = ''.join(''.join(c['source']) for c in notebooks[1]['cells'])
+    assert 'flash-linear-attention' not in source and 'from fla' not in source
+    assert 'recovery_lr(' not in source
+    cosine_node = next(n for n in ast.parse(''.join(notebooks[1]['cells'][5]['source'])).body
+                       if isinstance(n, ast.FunctionDef) and n.name == 'cosine_lr')
+    import math
+    ns = {'math': math}
+    exec(compile(ast.Module(body=[cosine_node], type_ignores=[]), '<schedule>', 'exec'), ns)
+    for steps in (400, 1600, 900, 700):
+        rates = [ns['cosine_lr'](i, steps, .01, .002) for i in range(steps)]
+        assert rates[0] == pytest.approx(.01) and rates[-1] == pytest.approx(.002)
+        assert all(a >= b for a,b in zip(rates, rates[1:]))
     for i, cell in enumerate(notebooks[1]['cells']):
         if cell['cell_type'] == 'code':
             assert cell['outputs'] == [] and cell['execution_count'] is None
@@ -204,7 +226,7 @@ def test_notebook_all_training_stages_on_tiny_cpu_model(tmp_path, version):
     ns = dict(torch=torch, nn=nn, F=torch.nn.functional, copy=copy, math=math,
               np=np, random=random, nullcontext=nullcontext, device=torch.device('cpu'),
               replacement_for=replacement_for, LinearMaskEncoder=LinearMaskEncoder,
-              WindowedBiDelta=WindowedBiDelta, MultiscaleCeNN=MultiscaleCeNN,
+              WindowedBiDelta=WindowedBiDelta, SlidingCeNN=SlidingCeNN, MultiscaleCeNN=MultiscaleCeNN,
               PooledMarkerDecisionModel=PooledMarkerDecisionModel,
               v25_core_parameters=core_parameters, collate_items=collate_items,
               ARCHITECTURE=ARCH, BATCH=2, amp_dtype=torch.float32,
@@ -230,7 +252,7 @@ def test_notebook_all_training_stages_on_tiny_cpu_model(tmp_path, version):
     ns['full_layers'] = [0]
     ns['replacement_layers'] = [0, 1, 2]
     ns['v25_indices'] = lambda m: [i for i,l in enumerate(m.encoder.layers)
-        if isinstance(l.attn, (WindowedBiDelta, MultiscaleCeNN))]
+        if isinstance(l.attn, (WindowedBiDelta, SlidingCeNN, MultiscaleCeNN))]
     ns['tokenizer'] = type('Tokenizer', (), {'pad_token_id': 0})()
     rng = random.Random(42)
     def items(n):
@@ -256,6 +278,7 @@ def test_notebook_all_training_stages_on_tiny_cpu_model(tmp_path, version):
         run(''.join(nb['cells'][i]['source']))
     if version == 'V25':
         assert attention_audit(ns['compact_student'])['passed']
+        assert attention_audit(ns['compact_student'])['delta_free']
     for before, layer in zip(ffn_before, ns['compact_student'].encoder.layers):
         for key, value in layer.mlp.state_dict().items():
             torch.testing.assert_close(value, before[key], atol=0, rtol=0)
@@ -264,3 +287,68 @@ def test_notebook_all_training_stages_on_tiny_cpu_model(tmp_path, version):
     # current in-memory encoder has already been converted/trained.
     ns['RESUME_STAGE_A'] = True
     run(''.join(nb['cells'][5]['source']))
+
+
+def test_sliding_cenn_exact_receptive_field_bidirectional_and_no_chunk_boundaries():
+    torch.manual_seed(71)
+    block = SlidingCeNN(encoder().layers[1].attn, window=8, cell_dim=8, steps=2)
+    x = torch.randn(1, 25, 16, requires_grad=True)
+    y = block(x)[0]
+    grad, = torch.autograd.grad(y[:, 12].square().sum(), x)
+    assert grad[:, 8].abs().sum() > 0 and grad[:, 16].abs().sum() > 0
+    assert grad[:, :8].count_nonzero() == 0 and grad[:, 17:].count_nonzero() == 0
+    # Shifting the same valid sequence by three positions crosses former chunk
+    # boundaries, but must preserve every result with zero/invalid padding.
+    shifted = torch.nn.functional.pad(x.detach(), (0, 0, 3, 5))
+    mask = torch.nn.functional.pad(torch.ones(1, 25, dtype=torch.long), (3, 5))
+    ys = block(shifted, attention_mask=mask)[0]
+    torch.testing.assert_close(y, ys[:, 3:28], atol=1e-7, rtol=1e-5)
+    assert ys[:, :3].count_nonzero() == 0 and ys[:, 28:].count_nonzero() == 0
+
+
+def test_sliding_cenn_masked_inputs_and_empty_rows_cannot_leak():
+    block = SlidingCeNN(encoder().layers[1].attn, window=8, cell_dim=8, steps=2)
+    x = torch.randn(2, 19, 16)
+    mask = torch.ones(2, 19, dtype=torch.long)
+    mask[0] = 0
+    mask[1, 6:10] = 0
+    changed = x.clone()
+    changed[~mask.bool()] = 100*torch.randn_like(changed[~mask.bool()])
+    y, z = block(x, attention_mask=mask)[0], block(changed, attention_mask=mask)[0]
+    torch.testing.assert_close(y, z)
+    assert torch.isfinite(y).all() and y[~mask.bool()].count_nonzero() == 0
+
+
+def test_sliding_cenn_learns_a_local_operator_at_requested_rates():
+    # A deterministic local target establishes trainability, not benchmark quality.
+    torch.manual_seed(11)
+    original = encoder().layers[1].attn
+    block = SlidingCeNN(original, window=8, cell_dim=16, steps=2)
+    x = torch.randn(4, 17, 16)
+    probe = torch.randn(2, 17, 16)
+    def target(z):
+        v = torch.nn.functional.linear(z, original.Wqkv.weight[32:48])
+        local = torch.nn.functional.avg_pool1d(v.transpose(1, 2), 3, stride=1, padding=1).transpose(1, 2)
+        return original.Wo(.5*v + .5*local).detach()
+    expected, held_out = target(x), target(probe)
+    before = (block(probe)[0]-held_out).square().mean().item()
+    optimizer = torch.optim.AdamW(block.parameters(), lr=.01)
+    from tinycenn_lm.decision_training import guarded_step, recovery_lr
+    scaler = torch.amp.GradScaler('cpu', enabled=False)
+    for step in range(100):
+        optimizer.param_groups[0]['lr'] = recovery_lr(step, 100, .01, .002, warmup_steps=0)
+        optimizer.zero_grad(set_to_none=True)
+        loss = (block(x)[0]-expected).square().mean()
+        guarded_step(loss, optimizer, scaler, [(list(block.parameters()), 1.)], 'local fit')
+    after = (block(probe)[0]-held_out).square().mean().item()
+    assert after < .5*before
+
+
+def test_sliding_cenn_cpu_bfloat16_forward_backward():
+    block = SlidingCeNN(encoder().layers[1].attn, window=8, cell_dim=8, steps=2)
+    x = torch.randn(2, 17, 16)
+    with torch.autocast('cpu', dtype=torch.bfloat16):
+        y = block(x)[0]
+    y.float().square().mean().backward()
+    assert torch.isfinite(y).all()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in block.parameters())
