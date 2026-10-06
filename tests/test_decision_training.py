@@ -77,3 +77,95 @@ def test_v24_layer_detection_on_pinned_modernbert():
         reference_compile=False, pad_token_id=0)
     m = StandaloneDecisionModel(AutoModel.from_config(cfg, attn_implementation='sdpa'), head_layers=0)
     assert full_attention_indices(m) == [0,3]
+
+
+def test_distillation_extreme_finite_fp16_actions_remain_finite():
+    from tinycenn_lm.decision_training import decision_distill_loss
+    # FP16 log-softmax can produce -inf for this finite range, leading to 0*inf.
+    student = torch.tensor([[60000., -60000.]], dtype=torch.float16, requires_grad=True)
+    teacher = torch.tensor([[-60000., 60000.]], dtype=torch.float16)
+    logits = torch.tensor([[1., -1.]], requires_grad=True)
+    loss = decision_distill_loss(logits, logits.detach(), torch.ones(1, 2, dtype=torch.bool), student, teacher)
+    assert loss.dtype == torch.float32 and torch.isfinite(loss)
+    loss.backward()
+    assert torch.isfinite(student.grad).all() and torch.isfinite(logits.grad).all()
+    with pytest.raises(FloatingPointError, match='student action'):
+        decision_distill_loss(logits, logits.detach(), torch.ones(1, 2, dtype=torch.bool),
+                             student*float('inf'), teacher)
+
+
+@pytest.mark.parametrize('failure', ['loss', 'gradient', 'validation', 'parameter'])
+def test_recovery_restores_best_clears_moments_and_reduces_rates(failure):
+    from tinycenn_lm.decision_training import run_recovery_phase
+    model = torch.nn.Linear(1, 1, bias=False)
+    model.weight.data.fill_(1.)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=.01)
+    broken = False
+    restored = False
+    last_valid = model.weight.detach().clone()
+    def evaluate():
+        nonlocal broken, last_valid
+        if failure == 'validation' and not broken and float(model.weight.detach()) < .985:
+            broken = True
+            return {'loss': float('nan')}
+        last_valid = model.weight.detach().clone()
+        return {'loss': float(model.weight.detach().square().sum())}
+    def loss_fn(step):
+        nonlocal broken, restored
+        if broken and not restored:
+            torch.testing.assert_close(model.weight, last_valid, rtol=0, atol=0)
+            assert not optimizer.state
+            assert optimizer.param_groups[0]['lr'] <= .0025
+            restored = True
+        if step == 1 and not broken and failure != 'validation':
+            broken = True
+            if failure == 'parameter':
+                with torch.no_grad(): model.weight.fill_(float('inf'))
+            if failure == 'loss': return model.weight.sum()*float('nan')
+            if failure == 'gradient': return (model.weight-model.weight.detach()).sqrt().sum()
+        return model.weight.square().sum()
+    with pytest.warns(UserWarning, match='restored best checkpoint'):
+        result = run_recovery_phase(model, optimizer, [(list(model.parameters()), 1.)],
+            4, [(.01, .002)], loss_fn, evaluate, lambda m:m['loss'], 'test',
+            eval_every=1, warmup_steps=0)
+    assert broken and restored and result['restarts'] == 1
+    assert result['lr_factor'] == .25 and result['completed_steps'] == 4
+    assert torch.isfinite(model.weight).all()
+
+
+def test_recovery_exhausted_budget_restores_baseline_and_fails_closed():
+    from tinycenn_lm.decision_training import run_recovery_phase
+    model = torch.nn.Linear(1, 1, bias=False)
+    before = model.weight.detach().clone()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=.01)
+    def broken(step):
+        with torch.no_grad(): model.weight.add_(1.)
+        return model.weight.sum()*float('nan')
+    with pytest.warns(UserWarning, match='restored best checkpoint'):
+        with pytest.raises(FloatingPointError, match='retry budget exhausted'):
+            run_recovery_phase(model, optimizer, [(list(model.parameters()), 1.)],
+                2, [(.01, .002)], broken, lambda:{'score': 0.}, lambda m:m['score'],
+                'test', max_restarts=1)
+    torch.testing.assert_close(model.weight, before, rtol=0, atol=0)
+    assert not optimizer.state
+
+
+def test_amp_skipped_batch_retries_same_step_with_fresh_phase_scale(monkeypatch):
+    import tinycenn_lm.decision_training as training
+    model = torch.nn.Linear(1, 1, bias=False)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=.01)
+    seen = []
+    real_step = training.guarded_step
+    def skip_once(loss, opt, scaler, groups, context):
+        if len(seen) == 1:
+            assert scaler.get_scale() == 128.
+            return False
+        return real_step(loss, opt, scaler, groups, context)
+    monkeypatch.setattr(training, 'guarded_step', skip_once)
+    def loss_fn(step):
+        seen.append(step)
+        return model.weight.square().sum()
+    result = training.run_recovery_phase(model, optimizer, [(list(model.parameters()), 1.)],
+        2, [(.01, .002)], loss_fn, lambda:{'score': float(model.weight.detach().square().sum())},
+        lambda m:m['score'], 'test', amp_enabled=True)
+    assert seen == [0, 0, 1] and result['amp_skips'] == 1

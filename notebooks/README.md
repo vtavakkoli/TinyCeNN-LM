@@ -1,6 +1,6 @@
 # Notebook catalog
 
-All **74 notebooks** live under this directory: **45 current entries** and **29 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
+All **75 notebooks** live under this directory: **45 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
 
 [Project overview](../README.md) · [Model status](../MODEL_STATUS.md) · [Archived notebooks](archive/README.md) · [Path migration](../docs/NOTEBOOK_MIGRATION.md)
 
