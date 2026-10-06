@@ -1,8 +1,8 @@
 # Laya V2.5: windowed Delta and multiscale recurrent CeNN
 
-[Run in Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/codex/laya-v25-window-delta-cenn/notebooks/Laya_Integrated_Memory_V25_WindowDelta_CeNN_Decision_Colab.ipynb)
+[Run in Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_Integrated_Memory_V25_WindowDelta_CeNN_Decision_Colab.ipynb)
 
-Status: implementation tested on small CPU models; full CUDA training, kernel execution, quality and speed are **not yet measured**. The notebook contains no inherited outputs. V2.4 is unchanged.
+Status: a saved T4 run passed the FLA preflight and all 28 local transfers, but developed NaNs during recovery. The corrected recovery revision is CPU-tested; a new full GPU run is required. The notebook contains no inherited outputs. The shared recovery fixes also update V2.4; neither canonical notebook contains old results presented as new measurements.
 
 ## Architecture
 
@@ -17,20 +17,20 @@ Window states start at zero in each direction. This is an overlapping-chunk appr
 
 `LinearMaskEncoder` preserves the pretrained FFN/residual computation but bypasses the native quadratic attention-mask builder. All encoder layers must be converted before it can be installed. The final module audit also rejects a remaining Transformer decision head.
 
-## Preserved training protocol
+## Training protocol after the recovery fix
 
 | Stage | Steps | Initial → final LR |
 |---|---:|---|
 | A: progressive local replacement | 400 per encoder layer | 0.01 → 0.0005 |
-| B: recovery with original decision head | 1600 | core 0.01 → 0.0005; head 0.002 → 0.0001 |
-| C: direct gold supervision | 900 | core 0.003 → 0.0003; head 0.0006 → 0.00005 |
+| B: recovery with original decision head | 1600 | core 0.001 → 0.0001; head 0.0001 → 0.00001 |
+| C: direct gold supervision | 900 | core 0.0003 → 0.00003; head 0.00005 → 0.000005 |
 | Compact pooled head | 700 | 0.0008 → 0.00008 |
-| Compact joint recovery | 400 | core 0.002 → 0.0002; head 0.00015 → 0.00003 |
-| Compact direct gold supervision | 700 | core 0.002 → 0.0002; head 0.0004 → 0.00004 |
+| Compact joint recovery | 400 | core 0.0003 → 0.00003; head 0.0001 → 0.00001 |
+| Compact direct gold supervision | 700 | core 0.0003 → 0.00003; head 0.0001 → 0.00001 |
 
-The V2.4 losses, cosine schedules, split sizes, batch size and checkpoint-selection formulas are retained. Stage A now processes **all** encoder layers, increasing total training work. Core discovery includes both CeNN and Delta parameters even after a blanket parameter freeze. CeNN projections learn; inherited local Delta QKV/output projections remain frozen, matching the V2.4 projection policy. The original-head intermediate is kept for recovery/comparison, but is never eligible for upload.
+Step counts, split sizes, batch size and local-transfer cosine decay are retained. Recovery rates above are peaks after a short warmup (at most 20 steps). Stage B adds a 0.05-weight CLS/option-marker representation loss. Gold checkpoint selection is now accuracy-first, uses the whole dev set, and retains the stage-entry model if training does not improve it. Stage A now processes **all** encoder layers, increasing total training work. Core discovery includes both CeNN and Delta parameters even after a blanket parameter freeze. CeNN projections learn; inherited local Delta QKV/output projections remain frozen, matching the V2.4 projection policy. The original-head intermediate is kept for recovery/comparison, but is never eligible for upload.
 
-FP16 gradient scaling and native-BF16 detection are numerical safeguards. Transformers 4.57.6 and FLA 0.5.2 are pinned. The notebook checks FLA forward agreement against an explicit reference recurrence and finite gradients on the actual GPU before expensive training. CPU reference scans are for correctness/debug only, never a silent CUDA performance fallback.
+FP16 uses an initial scale of 128 and native-BF16 detection. Shared guarded updates reject non-finite losses, skip AMP gradient overflows with scale backoff, stop persistent overflow, and prevent non-finite validation scores from selecting a checkpoint. Stage A saves a safetensors checkpoint and checks source/configuration metadata before resuming. Keep OUTPUT_DIR on a persistent mount to survive Colab resets. Transformers 4.57.6 and FLA 0.5.2 are pinned. The notebook checks FLA forward agreement against an explicit reference recurrence and finite gradients on the actual GPU before expensive training. CPU reference scans are for correctness/debug only, never a silent CUDA performance fallback.
 
 ## Evaluation and conditional Hugging Face export
 
@@ -59,3 +59,9 @@ Pack typed decisions with `build_sequence`/`collate_items` from the bundled `sta
 ## Limits
 
 This is a bidirectional typed-decision encoder, not a causal language model or a pure CeNN. Gated Delta is a recurrent/linear-attention-family mechanism. The original official test split is held out during this notebook run, but it informed earlier V2.4 research; use a fresh external benchmark for publication validation. The source teacher's data provenance is not established here. Action-head outputs are distilled from the teacher, not validated against independent action labels. Latency excludes tokenization; activation peaks exclude resident model weights.
+
+## Diagnosed failure and remaining validation
+
+The executed V2.5 notebook was saved under `laya-v25-window-delta-cenn/notebooks/` on main. Its Stage B printed 250/264 finite gradient tensors at the first step, then NaN loss/JS by step 600. It continued through step 1600 and failed in Stage C with `non-finite direct gold loss`. The old loop only required at least one finite gradient and had no Stage B finite-loss guard. High recovery rates are a plausible contributor; a full GPU run is still needed to establish the numerical cause and measure corrected quality.
+
+The canonical notebooks now link/install from main. The executed notebook is preserved unchanged at [the archived T4 run](../notebooks/archive/Laya_V25_T4_failed_recovery_20261005.ipynb), satisfying the repository notebook placement check. The pip resolver warnings for unrelated preinstalled Gradio/Diffusers packages are separate from this observed training failure; use a fresh dedicated runtime for the pinned Transformers stack.

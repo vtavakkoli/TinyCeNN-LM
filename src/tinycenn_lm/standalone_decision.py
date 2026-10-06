@@ -416,11 +416,23 @@ class IntegratedMemoryV23Attention(nn.Module):
 
 
 def full_attention_indices(model: nn.Module) -> list[int]:
-    return [
-        i
-        for i, layer in enumerate(model.encoder.layers)
-        if str(getattr(layer, "attention_type", "")) == "full_attention"
-    ]
+    # Older ModernBERT releases expose the pattern via config instead of layer.attention_type.
+    out = []
+    for i, layer in enumerate(model.encoder.layers):
+        kind = getattr(layer, "attention_type", None)
+        if kind is None:
+            config = getattr(model.encoder, "config", None)
+            types = getattr(config, "layer_types", None)
+            if types:
+                kind = types[i]
+            else:
+                every = getattr(config, "global_attn_every_n_layers", None)
+                if every is None:
+                    raise ValueError("Cannot determine ModernBERT attention layer types")
+                kind = "full_attention" if i % every == 0 else "sliding_attention"
+        if kind == "full_attention":
+            out.append(i)
+    return out
 
 
 def install_integrated_memory(

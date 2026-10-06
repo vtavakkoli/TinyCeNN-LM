@@ -247,14 +247,21 @@ class LinearMaskEncoder(nn.Module):
             raise ValueError("Convert every encoder attention before wrapping")
         self.config = encoder.config
         self.embeddings, self.layers, self.final_norm = encoder.embeddings, encoder.layers, encoder.final_norm
+        # Transformers 5 moved RoPE from attention modules onto the encoder.
+        self.rotary_emb = getattr(encoder, "rotary_emb", None)
+        self.kinds = layer_kinds(encoder)
 
     def forward(self, input_ids, attention_mask=None, **kwargs):
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids)
         h = self.embeddings(input_ids=input_ids)
         pos = torch.arange(input_ids.shape[1], device=input_ids.device)[None, :]
-        for layer in self.layers:
-            mixed = layer.attn(layer.attn_norm(h), attention_mask=attention_mask, position_ids=pos)[0]
+        positions = {}
+        if self.rotary_emb is not None:
+            positions = {kind: self.rotary_emb(h, pos, kind) for kind in set(self.kinds)}
+        for layer, kind in zip(self.layers, self.kinds):
+            mixed = layer.attn(layer.attn_norm(h), attention_mask=attention_mask, position_ids=pos,
+                               position_embeddings=positions.get(kind))[0]
             h = h + mixed
             h = h + layer.mlp(layer.mlp_norm(h))
         return SimpleNamespace(last_hidden_state=self.final_norm(h) * attention_mask[:, :, None])
