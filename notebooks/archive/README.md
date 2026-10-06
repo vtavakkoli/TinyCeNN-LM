@@ -1,6 +1,6 @@
 # Archived notebooks
 
-These 29 notebooks are removed from the active model shortlist. They preserve earlier architectures, ablations, branch-specific variants and a pre-fix snapshot. Their training code and saved results remain available; compatibility with current dependencies is not guaranteed.
+These 30 notebooks are removed from the active model shortlist. They preserve earlier architectures, ablations, branch-specific variants and a pre-fix snapshot. Their training code and saved results remain available; compatibility with current dependencies is not guaranteed.
 
 Use the [current catalog](../README.md) for new runs. The [migration record](../../docs/NOTEBOOK_MIGRATION.md) explains moved paths and how to recover the original revision.
 
@@ -35,3 +35,4 @@ Use the [current catalog](../README.md) for new runs. The [migration record](../
 | [Qwen35_08B_FlyEmbedding_v3_Residual_Colab](superseded/Qwen35_08B_FlyEmbedding_v3_Residual_Colab.ipynb) | superseded |
 | [Laya V2.5 T4 failed recovery, 2026-10-05](Laya_V25_T4_failed_recovery_20261005.ipynb) | Historical executed run before recovery safeguards; outputs preserved |
 | [Laya V2.5 Delta recovery, 2026-10-06](Laya_V25_Delta_recovery_20261006.ipynb) | Stable recovery, incomplete gold stage before sliding CeNN replacement |
+| [Laya V2.5 sliding CeNN recovery failure, 2026-10-06](Laya_V25_SlidingCeNN_recovery_failure_20261006.ipynb) | Completed local transfer; Stage B non-finite loss at step 74 |

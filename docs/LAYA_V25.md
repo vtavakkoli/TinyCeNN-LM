@@ -2,9 +2,13 @@
 
 [Run in Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_Integrated_Memory_V25_WindowDelta_CeNN_Decision_Colab.ipynb)
 
-The canonical notebook now trains sliding CeNN instead of windowed Delta. Its filename stays unchanged to preserve links. This revision is CPU-tested; full GPU accuracy, convergence and latency remain unmeasured. The notebook clears historical outputs and uses a new output directory, `/content/Laya_V25_SlidingCeNN`.
+The canonical notebook now trains sliding CeNN instead of windowed Delta. Its filename stays unchanged to preserve links. Sliding CeNN has completed local transfer on a T4; the recovery fix is CPU-tested and still needs a complete GPU evaluation. The notebook clears historical outputs and keeps the output directory, `/content/Laya_V25_SlidingCeNN`.
 
 ## Latest saved run and motivation
+
+The [latest sliding CeNN run](../notebooks/archive/Laya_V25_SlidingCeNN_recovery_failure_20261006.ipynb) completed all 28 local transfers. Sliding layer 25 reached cosine 0.9531/NMSE 0.0960, compared with 0.7055/0.5320 in the prior Delta run. This is a local-fit improvement, not a completed test-accuracy result. Joint recovery updated 21,017,146 CeNN parameters plus the pretrained head at 0.01; agreement was 31.6% after the first update, an AMP gradient overflow was skipped at step 5, and the loss became non-finite at step 74. No completed gold/test result exists. High joint rates are a plausible cause; the saved traceback does not identify the first failing tensor. The corrected loss now names non-finite decision/action outputs.
+
+The action-head distillation arithmetic also had a reproducible FP16 hazard: finite logits can produce infinite log-softmax differences. The fix casts decision and action logits to FP32 before probability/ranking arithmetic. This resolves that arithmetic hazard without hiding already-invalid model outputs.
 
 The [2026-10-06 Delta run](../notebooks/archive/Laya_V25_Delta_recovery_20261006.ipynb) passed FLA preflight and completed all 28 local transfers. Recovery stayed finite, with an AMP overflow correctly skipped. It reached 55.6% teacher agreement at the final step; the selected checkpoint had 55.4% agreement and 0.06993 mean JS. Sliding layer 25 remained a weak local fit (cosine 0.7055, NMSE 0.5320). Gold training was saved only through step 200, so this run has no completed held-out test or speed result. These results support testing a different local mixer; they do not establish that the Delta implementation was broken.
 
@@ -33,20 +37,20 @@ Sliding convolution work scales linearly with sequence length for fixed cell wid
 
 ## Training schedule
 
-At the user's request, **every normal and gold training phase starts at 0.01 and ends at 0.002**, using exact cosine decay without warmup. This applies to both core and head optimizer groups. Stage counts, batch size, data splits and the order of training are preserved. V2.4's separate configuration is unchanged.
+The successful **local transfer keeps 0.01 → 0.002** without warmup. Following the observed joint-training failure, normal/gold recovery uses smaller rates, with at most 20 warmup steps followed by cosine decay. Stage counts, batch size, data splits, architecture and the order of training are preserved. V2.4's separate configuration is unchanged.
 
 | Stage | Steps | Initial → final LR |
 |---|---:|---|
 | A: progressive local replacement | 400 per encoder layer | 0.01 → 0.002 |
-| B: teacher distillation with original head | 1600 | core and head: 0.01 → 0.002 |
-| C: direct gold supervision | 900 | core and head: 0.01 → 0.002 |
-| Compact pooled-head distillation | 700 | 0.01 → 0.002 |
-| Compact joint distillation | 400 | core and head: 0.01 → 0.002 |
-| Compact direct gold supervision | 700 | core and head: 0.01 → 0.002 |
+| B: teacher distillation with original head | 1600 | core 0.001 → 0.0002; head 0.0001 → 0.00002 |
+| C: direct gold supervision | 900 | core 0.0003 → 0.00006; head 0.00005 → 0.00001 |
+| Compact pooled-head distillation | 700 | 0.001 → 0.0002 |
+| Compact joint distillation | 400 | core 0.0003 → 0.00006; head 0.0001 → 0.00002 |
+| Compact direct gold supervision | 700 | core 0.0003 → 0.00006; head 0.0001 → 0.00002 |
 
-These rates are aggressive experimental settings, not evidence that learning will be faster or better. Shared safeguards reject non-finite losses/parameters, skip AMP gradient overflows with scale backoff, stop persistent overflow and clip gradients before updates. FP16 starts at scale 128. Every recovery/head phase retains the stage-entry dev checkpoint if later training does not improve its selection criterion. Gold selection is lexicographic accuracy, KL, then Brier on the full dev set. Stage B retains marker-representation alignment with weight 0.05.
+Recovery-table starting rates are peaks after warmup. Shared safeguards reject non-finite losses/parameters, skip AMP gradient overflows and clip gradients before updates. Every recovery phase creates a fresh FP16 scaler at 128 rather than inheriting Stage A’s grown scale (4096 in the failed run). Skipped AMP updates retry the same training step. A numerical failure in forward/backward, updated parameters or dev evaluation restores the best validated trainable weights, clears Adam moments, resets AMP and multiplies rates by 0.25. It then retries from that checkpoint’s next step, with at most three restarts per phase. Exhausted retries restore the best weights and raise; they never continue to export. Successful phase histories and actual rates/backoffs are saved to `recovery_progress.json` and the final report. These safeguards do not prove GPU convergence. Every recovery/head phase retains the stage-entry dev checkpoint if later training does not improve its selection criterion. Gold selection is lexicographic accuracy, KL, then Brier on the full dev set. Stage B retains marker-representation alignment with weight 0.05.
 
-Stage A saves safetensors with source revision, architecture and training metadata. Old Delta checkpoints are incompatible with this architecture and must not be resumed; the new output directory and metadata checks prevent accidental reuse. Set OUTPUT_DIR to a persistent mount to retain new progress across Colab sessions.
+Stage A saves safetensors with source revision, architecture and training metadata. Completed sliding CeNN Stage A checkpoints remain compatible with this recovery fix: architecture, source/configuration checks and local rates are unchanged. Old Delta checkpoints are incompatible and must not be resumed. Set OUTPUT_DIR to a persistent mount to retain new progress across Colab sessions.
 
 Transformers 4.57.6 is pinned. Neither this notebook nor its all-CeNN export requires FLA. The preflight checks local/global CeNN forward agreement with FP32, padding invariance and finite gradients on the actual GPU/AMP dtype before training.
 
@@ -75,6 +79,10 @@ Pack typed decisions with `build_sequence`/`collate_items` from the bundled `sta
 
 ## Validation limits
 
-Tests cover exact local support in both directions, no chunk-boundary artifacts, padding/empty-row isolation, finite mixed-precision gradients, a learned local operator at the requested rates, the actual notebook training stages on tiny CPU models, preserved FFNs, stage resume, and self-contained save/reload for both new CeNN and legacy Delta checkpoints. These establish implementation behavior, not benchmark superiority.
+Tests cover exact local support in both directions, no chunk-boundary artifacts, padding/empty-row isolation, finite mixed-precision gradients, a learned local operator at the requested rates, the actual notebook training stages on tiny CPU models, preserved FFNs, stage resume, and self-contained save/reload for both new CeNN and legacy Delta checkpoints. Additional regression tests cover extreme finite FP16 action logits, rollback after non-finite loss/gradient/parameters/dev metrics, clearing stale optimizer moments, bounded retry failure, and retrying skipped AMP batches. These establish implementation behavior, not benchmark superiority.
 
 This is a bidirectional typed-decision encoder, not a causal text generator. The official test split is held out within the notebook, but it informed earlier research iterations; publication claims require a fresh external benchmark. Teacher data provenance is not established here. Action outputs are distilled from the teacher rather than validated against independent action labels. Latency excludes tokenization; activation-memory measurements exclude resident weights.
+
+## Continue the saved run
+
+Keep `/content/Laya_V25_SlidingCeNN/stage_A` (or its persistent copy). Open the updated notebook, install the new repository code, and restart the Python session if it had imported the old package. Do not delete the runtime files. Rerun configuration, preflight and data cells with the same source revision/settings; leave `RESUME_STAGE_A=True`. Stage A will load its existing checkpoint instead of repeating 28 local fits, then Stage B will start from those clean weights. If the old runtime files have been lost, Stage A must be rerun.

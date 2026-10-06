@@ -192,7 +192,9 @@ def test_notebook_preserves_schedules_and_has_no_saved_results():
         return out
     old, new = (schedule(nb) for nb in notebooks)
     assert {k:v for k,v in old.items() if '_LR' not in k} == {k:v for k,v in new.items() if '_LR' not in k}
-    assert all(v == (.002 if k.endswith('_MIN') else .01) for k,v in new.items() if '_LR' in k)
+    assert new['LOCAL_LR'] == .01 and new['LOCAL_LR_MIN'] == .002
+    assert new['GLOBAL_CORE_LR'] == .001 and new['GLOBAL_HEAD_LR'] == .0001
+    assert all(0 < v < .002 for k,v in new.items() if '_LR' in k and not k.startswith('LOCAL'))
     source = ''.join(''.join(c['source']) for c in notebooks[1]['cells'])
     assert 'flash-linear-attention' not in source and 'from fla' not in source
     assert 'recovery_lr(' not in source
@@ -223,7 +225,8 @@ def test_notebook_all_training_stages_on_tiny_cpu_model(tmp_path, version):
     root = Path(__file__).resolve().parents[1]
     suffix = 'BiGatedDeltaLite' if version == 'V24' else 'WindowDelta_CeNN'
     nb = json.loads((root/f'notebooks/Laya_Integrated_Memory_{version}_{suffix}_Decision_Colab.ipynb').read_text())
-    ns = dict(torch=torch, nn=nn, F=torch.nn.functional, copy=copy, math=math,
+    ns = dict(torch=torch, nn=nn, F=torch.nn.functional, copy=copy, math=math, json=json,
+              attention_audit=attention_audit,
               np=np, random=random, nullcontext=nullcontext, device=torch.device('cpu'),
               replacement_for=replacement_for, LinearMaskEncoder=LinearMaskEncoder,
               WindowedBiDelta=WindowedBiDelta, SlidingCeNN=SlidingCeNN, MultiscaleCeNN=MultiscaleCeNN,
@@ -238,11 +241,14 @@ def test_notebook_all_training_stages_on_tiny_cpu_model(tmp_path, version):
             if '_LR' in name or name.endswith('STEPS'):
                 ns[name] = 2 if name.endswith('STEPS') else ast.literal_eval(node.value)
     from tinycenn_lm.decision_training import (require_finite, guarded_step, gold_checkpoint_key,
-        trainable_snapshot, recovery_lr, save_stage, load_stage, forward_with_markers, marker_alignment_loss)
+        trainable_snapshot, recovery_lr, save_stage, load_stage, forward_with_markers, marker_alignment_loss,
+        run_recovery_phase, decision_distill_loss)
     ns.update(require_finite=require_finite, guarded_step=guarded_step,
         gold_checkpoint_key=gold_checkpoint_key, trainable_snapshot=trainable_snapshot,
         recovery_lr=recovery_lr, save_stage=save_stage, load_stage=load_stage,
         forward_with_markers=forward_with_markers, marker_alignment_loss=marker_alignment_loss,
+        run_recovery_phase=run_recovery_phase, decision_distill_loss=decision_distill_loss,
+        RECOVERY_WARMUP=20, RECOVERY_MAX_RESTARTS=3, RECOVERY_BACKOFF=.25, recovery_reports={}, OUTPUT_DIR=tmp_path,
         MARKER_ALIGNMENT_WEIGHT=.05, RESUME_STAGE_A=False, STAGE_A_DIR=tmp_path/'stage_A', SOURCE_MODEL='test',
         source_dir=Path('test-revision'), SEED=42, MAX_LEN=32, TRAIN_CASES=16, DEV_CASES=6)
     ns.update(COMPACT_DIM=8, COMPACT_LAYERS=2, RUN_COMPACT_HEAD=True)
