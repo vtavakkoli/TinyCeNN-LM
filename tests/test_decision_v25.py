@@ -189,7 +189,8 @@ def test_notebook_preserves_schedules_and_has_no_saved_results():
             if i != 1: ast.parse(''.join(cell['source']))
 
 
-def test_notebook_all_training_stages_on_tiny_cpu_model():
+@pytest.mark.parametrize("version", ["V24", "V25"])
+def test_notebook_all_training_stages_on_tiny_cpu_model(tmp_path, version):
     """Execute the actual training cells with tiny data/steps and the reference scan."""
     import ast
     import math
@@ -198,10 +199,12 @@ def test_notebook_all_training_stages_on_tiny_cpu_model():
     from contextlib import nullcontext
     from tinycenn_lm.standalone_decision import collate_items
     root = Path(__file__).resolve().parents[1]
-    nb = json.loads((root/'notebooks/Laya_Integrated_Memory_V25_WindowDelta_CeNN_Decision_Colab.ipynb').read_text())
+    suffix = 'BiGatedDeltaLite' if version == 'V24' else 'WindowDelta_CeNN'
+    nb = json.loads((root/f'notebooks/Laya_Integrated_Memory_{version}_{suffix}_Decision_Colab.ipynb').read_text())
     ns = dict(torch=torch, nn=nn, F=torch.nn.functional, copy=copy, math=math,
               np=np, random=random, nullcontext=nullcontext, device=torch.device('cpu'),
               replacement_for=replacement_for, LinearMaskEncoder=LinearMaskEncoder,
+              WindowedBiDelta=WindowedBiDelta, MultiscaleCeNN=MultiscaleCeNN,
               PooledMarkerDecisionModel=PooledMarkerDecisionModel,
               v25_core_parameters=core_parameters, collate_items=collate_items,
               ARCHITECTURE=ARCH, BATCH=2, amp_dtype=torch.float32,
@@ -212,6 +215,14 @@ def test_notebook_all_training_stages_on_tiny_cpu_model():
             name = node.targets[0].id
             if '_LR' in name or name.endswith('STEPS'):
                 ns[name] = 2 if name.endswith('STEPS') else ast.literal_eval(node.value)
+    from tinycenn_lm.decision_training import (require_finite, guarded_step, gold_checkpoint_key,
+        trainable_snapshot, recovery_lr, save_stage, load_stage, forward_with_markers, marker_alignment_loss)
+    ns.update(require_finite=require_finite, guarded_step=guarded_step,
+        gold_checkpoint_key=gold_checkpoint_key, trainable_snapshot=trainable_snapshot,
+        recovery_lr=recovery_lr, save_stage=save_stage, load_stage=load_stage,
+        forward_with_markers=forward_with_markers, marker_alignment_loss=marker_alignment_loss,
+        MARKER_ALIGNMENT_WEIGHT=.05, RESUME_STAGE_A=False, STAGE_A_DIR=tmp_path/'stage_A', SOURCE_MODEL='test',
+        source_dir=Path('test-revision'), SEED=42, MAX_LEN=32, TRAIN_CASES=16, DEV_CASES=6)
     ns.update(COMPACT_DIM=8, COMPACT_LAYERS=2, RUN_COMPACT_HEAD=True)
     ns['teacher'] = StandaloneDecisionModel(encoder(), head_layers=1).eval().requires_grad_(False)
     ns['student_full'] = copy.deepcopy(ns['teacher'])
@@ -232,11 +243,24 @@ def test_notebook_all_training_stages_on_tiny_cpu_model():
     def run(source):
         source = source.replace('torch.autocast(device_type="cuda", dtype=amp_dtype)', 'nullcontext()')
         exec(compile(source, '<v25-notebook-test>', 'exec'), ns)
+    if version == 'V24':
+        from tinycenn_lm.standalone_decision import _valid_tokens, _apply_modernbert_rope
+        from tinycenn_lm.decision_v25 import reference_delta
+        ns.update(_valid_tokens=_valid_tokens, _apply_modernbert_rope=_apply_modernbert_rope,
+                  ALLOW_NEG_EIGVAL=False, USE_BIDIRECTIONAL=True)
+        ns['chunk_gated_delta_rule'] = lambda q,k,v,g,beta,**kwargs: (reference_delta(q,k,v,g,beta), None)
+        run(''.join(nb['cells'][3]['source']))
     run(ast.unparse(ast.Module(body=helpers, type_ignores=[])))
     ffn_before = [copy.deepcopy(l.mlp.state_dict()) for l in ns['student_full'].encoder.layers]
     for i in (5, 6, 7, 9):
         run(''.join(nb['cells'][i]['source']))
-    assert attention_audit(ns['compact_student'])['passed']
+    if version == 'V25':
+        assert attention_audit(ns['compact_student'])['passed']
     for before, layer in zip(ffn_before, ns['compact_student'].encoder.layers):
         for key, value in layer.mlp.state_dict().items():
             torch.testing.assert_close(value, before[key], atol=0, rtol=0)
+
+    # Rerunning the completed Stage A cell restores its checkpoint even when the
+    # current in-memory encoder has already been converted/trained.
+    ns['RESUME_STAGE_A'] = True
+    run(''.join(nb['cells'][5]['source']))
