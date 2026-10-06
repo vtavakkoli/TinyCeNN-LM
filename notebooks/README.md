@@ -1,6 +1,6 @@
 # Notebook catalog
 
-All **73 notebooks** live under this directory: **45 current entries** and **28 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
+All **74 notebooks** live under this directory: **45 current entries** and **29 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
 
 [Project overview](../README.md) · [Model status](../MODEL_STATUS.md) · [Archived notebooks](archive/README.md) · [Path migration](../docs/NOTEBOOK_MIGRATION.md)
 
@@ -30,7 +30,7 @@ The core labels carry forward the existing model-status guide; this reorganizati
 | Notebook | Run |
 |---|---|
 | [Laya V2.4 Bi-Gated Delta Decision](Laya_Integrated_Memory_V24_BiGatedDeltaLite_Decision_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_Integrated_Memory_V24_BiGatedDeltaLite_Decision_Colab.ipynb) |
-| [Laya V2.5 Windowed Delta + CeNN Decision](Laya_Integrated_Memory_V25_WindowDelta_CeNN_Decision_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_Integrated_Memory_V25_WindowDelta_CeNN_Decision_Colab.ipynb) |
+| [Laya V2.5 Sliding CeNN + Multiscale CeNN Decision](Laya_Integrated_Memory_V25_WindowDelta_CeNN_Decision_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_Integrated_Memory_V25_WindowDelta_CeNN_Decision_Colab.ipynb) |
 | [Laya Integrated Memory V22](Laya_Integrated_Memory_V22_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_Integrated_Memory_V22_Colab.ipynb) |
 | [Laya Integrated Memory V23 Decision](Laya_Integrated_Memory_V23_Decision_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_Integrated_Memory_V23_Decision_Colab.ipynb) |
 | [Laya MemoryFusion](Laya_MemoryFusion_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_MemoryFusion_Colab.ipynb) |

@@ -1,8 +1,7 @@
-"""V2.5 typed decisions: windowed Delta + multiscale recurrent CeNN.
+"""V2.5 typed decisions: sliding CeNN + multiscale recurrent CeNN.
 
-The reference Delta backend is for correctness tests/CPU reloads only. CUDA runs
-use FLA and never silently fall back to the slow Python scan. Chunk overlap is an
-approximation to sliding attention, not an exact moving-window recurrence.
+SlidingCeNN uses parallel depthwise convolutions, with no FLA dependency.
+WindowedBiDelta remains available to reload earlier V2.5 checkpoints.
 """
 from __future__ import annotations
 
@@ -153,6 +152,69 @@ class WindowedBiDelta(nn.Module):
         return y * valid[:, :, None], None
 
 
+class SlidingCeNN(nn.Module):
+    """Bidirectional local cellular recurrence, without chunk boundaries.
+
+    Starting from zero, each update is x <- (1-eta)x + eta*tanh(A*x+B*u+b).
+    A has per-channel L1 norm <= .9, making feedback contractive for fixed u.
+    Both templates have radius window/(2*steps); after `steps` updates the
+    exact maximum input radius is window/2. Padding is masked at every update.
+    A learned pointwise readout path preserves unsaturated token information.
+    """
+    def __init__(self, original, window=128, cell_dim=384, steps=2):
+        super().__init__()
+        if steps < 1 or cell_dim < 1 or window < 2*steps or window % (2*steps):
+            raise ValueError("window must be a positive multiple of 2*steps; cell_dim must be positive")
+        self.config = original.config
+        self.window, self.cell_dim, self.steps = int(window), int(cell_dim), int(steps)
+        self.radius = self.window // (2*self.steps)
+        d = self.config.hidden_size
+        self.down = nn.Linear(d, cell_dim, bias=False)
+        self.up = nn.Linear(cell_dim, d, bias=False)
+        # Spread transferred V channels across all heads instead of truncating
+        # to the first heads. Both projections learn during local and joint fits.
+        with torch.no_grad():
+            take = min(d, cell_dim)
+            index = torch.linspace(0, d-1, take, device=original.Wqkv.weight.device).long()
+            self.down.weight[:take].copy_(original.Wqkv.weight[2*d:3*d][index])
+            self.up.weight[:, :take].copy_(original.Wo.weight[:, index])
+        self.norm = nn.LayerNorm(cell_dim)
+        width = 2*self.radius + 1
+        self.input_template = nn.Parameter(torch.full((cell_dim, 1, width), 1.0/width))
+        self.template = nn.Parameter(torch.full((cell_dim, 1, width), 0.5/width))
+        self.input_gain = nn.Parameter(torch.ones(cell_dim))
+        self.leak_logit = nn.Parameter(torch.zeros(cell_dim))
+        self.bias = nn.Parameter(torch.zeros(cell_dim))
+        self.readout_logit = nn.Parameter(torch.zeros(cell_dim))
+        self.output_gain = nn.Parameter(torch.zeros(()))
+        self.out_drop = copy.deepcopy(original.out_drop)
+
+    def trainable_core_parameters(self):
+        return list(self.parameters())
+
+    def forward(self, hidden_states, attention_mask=None, **kwargs):
+        valid = _valid_tokens(attention_mask, hidden_states)
+        mask = valid[:, None, :]
+        u = self.norm(self.down(hidden_states)).transpose(1, 2) * mask
+        # Keep template normalization and recurrent accumulation in FP32.
+        a = self.template.float().tanh()
+        a = 0.9 * a / a.abs().sum(-1, keepdim=True).clamp_min(1.0)
+        b = self.input_template.float()
+        b = b / b.abs().sum(-1, keepdim=True).clamp_min(1.0)
+        drive = F.conv1d(u, b.to(u.dtype), padding=self.radius, groups=self.cell_dim).float()
+        drive = drive*self.input_gain[None, :, None] + self.bias[None, :, None]
+        eta = self.leak_logit.float().sigmoid()[None, :, None]
+        state = torch.zeros_like(u, dtype=torch.float32)
+        for _ in range(self.steps):
+            feedback = F.conv1d(state.to(u.dtype), a.to(u.dtype),
+                                padding=self.radius, groups=self.cell_dim).float()
+            state = ((1-eta)*state + eta*torch.tanh(feedback + drive)) * mask
+        mix = self.readout_logit.float().sigmoid()[None, :, None]
+        z = (mix*state + (1-mix)*u.float()).transpose(1, 2)
+        out = self.up(z.to(hidden_states.dtype)) * self.output_gain.clamp(-2, 2).exp()
+        return self.out_drop(out) * valid[:, :, None], None
+
+
 class MultiscaleCeNN(nn.Module):
     """Leaky recurrent cellular templates at fixed scales plus global input.
 
@@ -224,14 +286,20 @@ def replacement_for(original, kind, config):
     if kind == "full_attention":
         return MultiscaleCeNN(original, config["cell_dim"], config["cell_steps"], config["scales"])
     if kind == "sliding_attention":
-        return WindowedBiDelta(original, config["window"], config["backend"])
+        mixer = config.get("local_mixer", "window_delta")  # old checkpoint compatibility
+        if mixer == "sliding_cenn":
+            return SlidingCeNN(original, config["window"], config["sliding_cell_dim"],
+                               config["sliding_steps"])
+        if mixer == "window_delta":
+            return WindowedBiDelta(original, config["window"], config["backend"])
+        raise ValueError(f"Unsupported local mixer: {mixer}")
     raise ValueError(kind)
 
 
 def core_parameters(model):
     seen, out = set(), []
     for module in model.modules():
-        if isinstance(module, (WindowedBiDelta, MultiscaleCeNN)):
+        if isinstance(module, (WindowedBiDelta, SlidingCeNN, MultiscaleCeNN)):
             for p in module.trainable_core_parameters():
                 if id(p) not in seen:
                     seen.add(id(p))
@@ -243,13 +311,14 @@ class LinearMaskEncoder(nn.Module):
     """Preserve all pretrained FFNs/norms/residuals without making T x T masks."""
     def __init__(self, encoder):
         super().__init__()
-        if not all(isinstance(l.attn, (WindowedBiDelta, MultiscaleCeNN)) for l in encoder.layers):
+        if not all(isinstance(l.attn, (WindowedBiDelta, SlidingCeNN, MultiscaleCeNN)) for l in encoder.layers):
             raise ValueError("Convert every encoder attention before wrapping")
         self.config = encoder.config
         self.embeddings, self.layers, self.final_norm = encoder.embeddings, encoder.layers, encoder.final_norm
         # Transformers 5 moved RoPE from attention modules onto the encoder.
         self.rotary_emb = getattr(encoder, "rotary_emb", None)
         self.kinds = layer_kinds(encoder)
+        self.needs_rope = any(isinstance(l.attn, WindowedBiDelta) for l in self.layers)
 
     def forward(self, input_ids, attention_mask=None, **kwargs):
         if attention_mask is None:
@@ -257,7 +326,7 @@ class LinearMaskEncoder(nn.Module):
         h = self.embeddings(input_ids=input_ids)
         pos = torch.arange(input_ids.shape[1], device=input_ids.device)[None, :]
         positions = {}
-        if self.rotary_emb is not None:
+        if self.needs_rope and self.rotary_emb is not None:
             positions = {kind: self.rotary_emb(h, pos, kind) for kind in set(self.kinds)}
         for layer, kind in zip(self.layers, self.kinds):
             mixed = layer.attn(layer.attn_norm(h), attention_mask=attention_mask, position_ids=pos,
@@ -312,12 +381,15 @@ class PooledMarkerDecisionModel(nn.Module):
 def attention_audit(model):
     encoder = getattr(model, "encoder", None)
     bad_layers = [] if encoder is None else [i for i, l in enumerate(encoder.layers)
-        if not isinstance(l.attn, (WindowedBiDelta, MultiscaleCeNN))]
+        if not isinstance(l.attn, (WindowedBiDelta, SlidingCeNN, MultiscaleCeNN))]
+    delta_layers = [] if encoder is None else [i for i, l in enumerate(encoder.layers)
+        if isinstance(l.attn, WindowedBiDelta)]
     head_attention = [n for n, m in model.named_modules() if isinstance(
         m, (nn.MultiheadAttention, nn.TransformerEncoder, nn.TransformerEncoderLayer))]
     return {"passed": isinstance(model, PooledMarkerDecisionModel)
             and isinstance(encoder, LinearMaskEncoder) and not bad_layers and not head_attention,
-            "unconverted_encoder_layers": bad_layers, "transformer_modules": head_attention}
+            "unconverted_encoder_layers": bad_layers, "transformer_modules": head_attention,
+            "delta_layers": delta_layers, "delta_free": not delta_layers}
 
 
 def export_gate(teacher, student, audit, max_accuracy_drop=0.02, min_speedup=1.10):
@@ -368,8 +440,10 @@ def save_v25(model, directory, tokenizer, architecture_config, source_config, re
     (package / "__init__.py").write_text("")
     shutil.copy2(__file__, package / "decision_v25.py")
     shutil.copy2(inspect.getfile(standalone_decision), package / "standalone_decision.py")
-    (root / "requirements.txt").write_text(
-        "torch>=2.6\ntransformers==4.57.6\nsafetensors>=0.4\nhuggingface_hub>=0.25\nflash-linear-attention[cuda]==0.5.2\n")
+    requirements = "torch>=2.6\ntransformers==4.57.6\nsafetensors>=0.4\nhuggingface_hub>=0.25\n"
+    if any(isinstance(m, WindowedBiDelta) for m in model.modules()):
+        requirements += "flash-linear-attention[cuda]==0.5.2\n"
+    (root / "requirements.txt").write_text(requirements)
     return root
 
 
