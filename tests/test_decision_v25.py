@@ -175,7 +175,7 @@ def test_export_gate_fails_closed():
     assert not export_gate({}, {}, audit)["passed"]
 
 
-def test_notebook_preserves_schedules_and_has_no_saved_results():
+def test_notebook_v25_schedule_and_has_no_saved_results():
     import ast
     root = Path(__file__).resolve().parents[1]
     names = ["Laya_Integrated_Memory_V24_BiGatedDeltaLite_Decision_Colab.ipynb",
@@ -191,10 +191,34 @@ def test_notebook_preserves_schedules_and_has_no_saved_results():
                     out[name] = ast.literal_eval(node.value)
         return out
     old, new = (schedule(nb) for nb in notebooks)
-    assert {k:v for k,v in old.items() if '_LR' not in k} == {k:v for k,v in new.items() if '_LR' not in k}
+    # V2.5 now has its own tuned teacher-grounded schedule; it intentionally no
+    # longer mirrors the older V2.4 budget. Pin the current V2.5 contract
+    # explicitly so accidental changes are still caught.
+    assert new['LOCAL_STEPS'] == 2000
+    assert new['GLOBAL_STEPS'] == 3200
+    assert new['TRAIN_CASES'] == 600
+    assert new['DEV_CASES'] == 100
+    assert new['TEST_CASES'] == 400
+    assert new['BATCH'] == 3 and new['MAX_LEN'] == 512
+    assert new['COMPACT_JOINT_STEPS'] == 1200
     assert new['LOCAL_LR'] == .01 and new['LOCAL_LR_MIN'] == .002
     assert new['GLOBAL_CORE_LR'] == .001 and new['GLOBAL_HEAD_LR'] == .0001
-    assert all(0 < v < .002 for k,v in new.items() if '_LR' in k and not k.startswith('LOCAL'))
+    assert new['GLOBAL_CORE_LR_MIN'] == .0002
+    assert new['GLOBAL_HEAD_LR_MIN'] == 2e-05
+    assert new['DIRECT_FULL_CORE_LR'] == .003
+    assert new['DIRECT_FULL_CORE_LR_MIN'] == 6e-05
+    assert new['DIRECT_FULL_HEAD_LR'] == 5e-05
+    assert new['DIRECT_FULL_HEAD_LR_MIN'] == 1e-05
+    assert new['DIRECT_COMPACT_CORE_LR'] == .001
+    assert new['DIRECT_COMPACT_CORE_LR_MIN'] == 6e-05
+    assert new['DIRECT_COMPACT_HEAD_LR'] == .0001
+    assert new['DIRECT_COMPACT_HEAD_LR_MIN'] == 2e-05
+    assert new['COMPACT_HEAD_LR'] == .001
+    assert new['COMPACT_HEAD_LR_MIN'] == .0002
+    assert new['JOINT_CORE_LR'] == .003
+    assert new['JOINT_CORE_LR_MIN'] == 6e-05
+    assert new['JOINT_HEAD_LR'] == .001
+    assert new['JOINT_HEAD_LR_MIN'] == 2e-05
     source = ''.join(''.join(c['source']) for c in notebooks[1]['cells'])
     assert 'flash-linear-attention' not in source and 'from fla' not in source
     assert 'recovery_lr(' not in source
@@ -270,6 +294,27 @@ def test_notebook_all_training_stages_on_tiny_cpu_model(tmp_path, version):
                and node.name in ('batch', 'attn_io', 'local_loss')]
     def run(source):
         source = source.replace('torch.autocast(device_type="cuda", dtype=amp_dtype)', 'nullcontext()')
+        if version == 'V25':
+            # The production V2.5 notebook is deliberately fail-closed. Two
+            # CPU smoke-test updates cannot satisfy its real reconstruction
+            # gates, so relax only the smoke-test thresholds while exercising
+            # the complete Stage A/B/C/compact control flow.
+            source = source.replace(
+                'LOCAL_GATE_MAX_NMSE = 0.30', 'LOCAL_GATE_MAX_NMSE = 1e9'
+            )
+            source = source.replace(
+                'LOCAL_GATE_MIN_COSINE = 0.88', 'LOCAL_GATE_MIN_COSINE = -1e9'
+            )
+            source = source.replace(
+                'STAGE_A_MIN_AGREEMENT = 0.95', 'STAGE_A_MIN_AGREEMENT = 0.0'
+            )
+            source = source.replace(
+                'STAGE_A_MAX_JS = 0.05', 'STAGE_A_MAX_JS = 1e9'
+            )
+            source = source.replace(
+                'STAGE_A_MIN_MARKER_COSINE = 0.95',
+                'STAGE_A_MIN_MARKER_COSINE = -1.0',
+            )
         exec(compile(source, '<v25-notebook-test>', 'exec'), ns)
     if version == 'V24':
         from tinycenn_lm.standalone_decision import _valid_tokens, _apply_modernbert_rope
