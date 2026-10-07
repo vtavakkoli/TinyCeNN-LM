@@ -203,7 +203,22 @@ def test_notebook_v25_schedule_and_has_no_saved_results():
     assert new['COMPACT_JOINT_STEPS'] == 1200
     assert new['LOCAL_LR'] == .01 and new['LOCAL_LR_MIN'] == .002
     assert new['GLOBAL_CORE_LR'] == .001 and new['GLOBAL_HEAD_LR'] == .0001
-    assert all(0 < v < .002 for k,v in new.items() if '_LR' in k and not k.startswith('LOCAL'))
+    assert new['GLOBAL_CORE_LR_MIN'] == .0002
+    assert new['GLOBAL_HEAD_LR_MIN'] == 2e-05
+    assert new['DIRECT_FULL_CORE_LR'] == .003
+    assert new['DIRECT_FULL_CORE_LR_MIN'] == 6e-05
+    assert new['DIRECT_FULL_HEAD_LR'] == 5e-05
+    assert new['DIRECT_FULL_HEAD_LR_MIN'] == 1e-05
+    assert new['DIRECT_COMPACT_CORE_LR'] == .001
+    assert new['DIRECT_COMPACT_CORE_LR_MIN'] == 6e-05
+    assert new['DIRECT_COMPACT_HEAD_LR'] == .0001
+    assert new['DIRECT_COMPACT_HEAD_LR_MIN'] == 2e-05
+    assert new['COMPACT_HEAD_LR'] == .001
+    assert new['COMPACT_HEAD_LR_MIN'] == .0002
+    assert new['JOINT_CORE_LR'] == .003
+    assert new['JOINT_CORE_LR_MIN'] == 6e-05
+    assert new['JOINT_HEAD_LR'] == .001
+    assert new['JOINT_HEAD_LR_MIN'] == 2e-05
     source = ''.join(''.join(c['source']) for c in notebooks[1]['cells'])
     assert 'flash-linear-attention' not in source and 'from fla' not in source
     assert 'recovery_lr(' not in source
