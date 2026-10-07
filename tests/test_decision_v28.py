@@ -49,6 +49,13 @@ def test_v28_full_factory_uses_pdelta_local_attention_and_frozen_qkv():
     assert output
     assert not ({id(p) for p in core} & {id(p) for p in output})
 
+    # Accepted local replacements are frozen before the one-shot joint phase;
+    # discovery must still find the intended parameters so they can be re-enabled.
+    block.requires_grad_(False)
+    frozen_core, frozen_output = split_v28_parameters(block)
+    assert {id(p) for p in frozen_core} == {id(p) for p in core}
+    assert {id(p) for p in frozen_output} == {id(p) for p in output}
+
 
 def test_v28_notebook_is_full_attention_first_and_fast():
     root = Path(__file__).resolve().parents[1]
