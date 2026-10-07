@@ -81,7 +81,7 @@ class SlidingAttentionCeNN(BaseLayaReplacementAttention):
             torch.zeros(self.num_heads, self.head_dim)
         )
         self.direct_gate_b = nn.Parameter(
-            torch.full((self.num_heads,), -0.50)
+            torch.full((self.num_heads,), 0.50)
         )
         self.output_log_gain = nn.Parameter(torch.zeros(self.num_heads))
 
@@ -188,7 +188,10 @@ class SlidingAttentionCeNN(BaseLayaReplacementAttention):
 
         qn = F.normalize(q.float(), dim=-1)
         kn = F.normalize(key_summary.float(), dim=-1)
-        qk = (qn * kn).sum(-1) / math.sqrt(max(1, self.head_dim))
+        # qn and kn are already unit-normalized, so their dot product is a
+        # cosine signal. Do not divide by sqrt(head_dim) again or the routing
+        # gate collapses toward a constant 0.5.
+        qk = (qn * kn).sum(-1)
         qk_scale = self.qk_log_scale.float().clamp(-2.0, 2.0).exp()
         context_gate = torch.sigmoid(
             qk * qk_scale[None, :, None]
