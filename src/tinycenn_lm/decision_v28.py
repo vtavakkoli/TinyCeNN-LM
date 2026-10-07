@@ -38,7 +38,10 @@ def split_v28_parameters(
     """Return (core, Wo) trainable parameter groups without duplicates."""
     core, output, seen = [], [], set()
     for name, p in module.named_parameters():
-        if not p.requires_grad or name.startswith(("Wqkv.", "out_drop.")):
+        # Discovery must not depend on the current frozen/trainable state.
+        # Accepted layers are frozen between local transfer and joint recovery,
+        # then explicitly re-enabled by the notebook.
+        if name.startswith(("Wqkv.", "out_drop.")):
             continue
         target = output if name.startswith("Wo.") else core
         if id(p) not in seen:
