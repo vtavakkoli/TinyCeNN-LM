@@ -240,7 +240,7 @@ def make_v27_replacement(
     """Build the V2.7 replacement selected for one ModernBERT attention type."""
     kind = str(attention_type)
     if kind == "full_attention":
-        return PDelta3GDN2CLVRAttention(
+        replacement = PDelta3GDN2CLVRAttention(
             original,
             feature_dim=int(full_feature_dim),
             conv_kernel=4,
@@ -249,6 +249,9 @@ def make_v27_replacement(
             local_window=int(full_local_window),
             local_gate_init=0.72,
         )
+        for p in replacement.Wo.parameters():
+            p.requires_grad = True
+        return replacement
     if kind == "sliding_attention":
         return SlidingAttentionCeNN(
             original,
