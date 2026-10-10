@@ -165,8 +165,13 @@ def upload_standalone_to_hub(folder, repo_id, *, token=None, private=True,
         if not (folder / name).is_file():
             raise FileNotFoundError(f"Incomplete model bundle: {name}")
     api = HfApi(token=token)
-    api.create_repo(repo_id=repo_id, repo_type="model",
-                    private=private, exist_ok=True)
+    created = api.create_repo(repo_id=repo_id, repo_type="model",
+                              private=private, exist_ok=True)
+    if private and not api.repo_info(repo_id=repo_id, repo_type="model").private:
+        raise PermissionError(
+            "HF_PRIVATE=True but target repo already exists as PUBLIC. "
+            "Choose a fresh repo ID or explicitly set private=False."
+        )
     commit = api.upload_folder(
         repo_id=repo_id, repo_type="model", folder_path=str(folder),
         commit_message=commit_message,
