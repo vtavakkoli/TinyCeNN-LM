@@ -110,3 +110,36 @@ def test_cpu_long_context_scaling_without_quadratic_alloc():
             x=torch.randn(1,t,16)
             y=layer(x,attention_mask=torch.ones(1,t,dtype=torch.bool))[0]
             assert y.shape==(1,t,16) and torch.isfinite(y).all()
+
+
+def test_real_modernbert_cpu_integration_both_attention_types():
+    from transformers import __version__, ModernBertConfig, AutoModel
+    if __version__ != "4.57.6":
+        pytest.skip("Small ModernBERT integration pinned to 4.57.6")
+    cfg=ModernBertConfig(
+        vocab_size=64, hidden_size=32, intermediate_size=48,
+        num_hidden_layers=4, num_attention_heads=2,
+        global_attn_every_n_layers=3, local_attention=8,
+        max_position_embeddings=128, reference_compile=False,
+        pad_token_id=0, attention_dropout=0.0,
+        embedding_dropout=0.0, mlp_dropout=0.0,
+    )
+    model=AutoModel.from_config(cfg,attn_implementation="sdpa").eval()
+    layers=model.layers
+    idx_global=0
+    idx_slide=1
+    layers[idx_global].attn=JevCeNNFreeMixer(
+        layers[idx_global].attn, variant="memory"
+    )
+    layers[idx_slide].attn=JevCeNNFreeMixer(
+        layers[idx_slide].attn, variant="local"
+    )
+    assert layers[idx_global].attn.original_local_attention==(-1,-1)
+    assert layers[idx_slide].attn.original_local_attention==(4,4)
+    tokens=torch.randint(1,64,(2,17))
+    padding=torch.ones(2,17,dtype=torch.long)
+    padding[1,-2:]=0
+    with torch.no_grad():
+        result=model(input_ids=tokens,attention_mask=padding).last_hidden_state
+    assert result.shape==(2,17,32)
+    assert torch.isfinite(result).all()
