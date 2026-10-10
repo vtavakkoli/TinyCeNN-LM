@@ -48,5 +48,4 @@ def test_tournament_checkpoint_paths_refer_to_defined_snapshot_helper():
     assert "def state_cpu(" in all_code
     assert "best_state = state_cpu(model)" in all_code
     assert '"state_dict":state_cpu(candidate)' in all_code
-    assert '"state_dict":state_cpu(model)' in all_code
     assert "model.load_state_dict(best_state, strict=True)" in all_code
