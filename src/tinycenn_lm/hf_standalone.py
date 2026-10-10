@@ -184,3 +184,51 @@ def upload_standalone_to_hub(folder, repo_id, *, token=None, private=True,
 
 # Reusable for other architectures that provide their own runtime_source.
 save_standalone_model = export_standalone_bundle
+
+
+def export_v31_all_attention(
+    model, tokenizer, *, output_dir, global_layers, sliding_layers,
+    global_window=1024, sliding_radius=64, sliding_block_size=64,
+    max_len=512, feature_dim=96, landmark_stride=16, max_landmarks=32,
+    source_model=None, report=None,
+):
+    """Publish a FULLY converted model with *both* global and sliding modules.
+
+    Reusable export_standalone_bundle writes complete weights + runtime.py, etc.
+    Standalone inference requires only torch, transformers, safetensors, hub.
+    """
+    global_layers = [int(i) for i in global_layers]
+    sliding_layers = [int(i) for i in sliding_layers]
+    total = len(model.encoder.layers)
+    if sorted(global_layers + sliding_layers) != list(range(total)):
+        raise ValueError("Every encoder attention layer must be converted once")
+    for i in global_layers:
+        if getattr(model.encoder.layers[i].attn, "architecture", "") != "pdelta_v28_fast_window_memory":
+            raise TypeError(f"Global layer {i} lacks V2.9 FastWindowMemory")
+    for i in sliding_layers:
+        if getattr(model.encoder.layers[i].attn, "architecture", "") != "sliding_window_fusion_v30":
+            raise TypeError(f"Sliding layer {i} lacks V3.0 SlidingWindowFusion")
+    manifest = {
+        "runtime_format": 1, "architecture": "laya-v31-all-attention",
+        "source_model": source_model,
+        "head_layers": int(len(model.head.layers) if model.head is not None else 0),
+        "n_act": int(model.act_head[-1].out_features),
+        "global_layers": global_layers, "sliding_layers": sliding_layers,
+        "window": int(global_window), "global_window": int(global_window),
+        "sliding_radius": int(sliding_radius),
+        "sliding_window_positions": 2 * int(sliding_radius) + 1,
+        "sliding_block_size": int(sliding_block_size),
+        "max_len": int(max_len),
+        "feature_dim": int(feature_dim),
+        "landmark_stride": int(landmark_stride),
+        "max_landmarks": int(max_landmarks),
+        "global_quadratic_full_context_control": int(global_window) >= 2 * int(max_len) - 1,
+        "contains_attention_ops": True,
+    }
+    return export_standalone_bundle(
+        model=model, tokenizer=tokenizer,
+        output_dir=output_dir,
+        runtime_source=Path(__file__).with_name("standalone_all_attention_runtime.py"),
+        encoder_config=model.encoder.config,
+        manifest=manifest, report=report,
+    )
