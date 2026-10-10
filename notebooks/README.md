@@ -1,6 +1,6 @@
 # Notebook catalog
 
-All **84 notebooks** live under this directory: **54 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
+All **86 notebooks** live under this directory: **56 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
 
 [Project overview](../README.md) · [Model status](../MODEL_STATUS.md) · [Archived notebooks](archive/README.md) · [Path migration](../docs/NOTEBOOK_MIGRATION.md)
 
@@ -37,6 +37,8 @@ The core labels carry forward the existing model-status guide; this reorganizati
 | [Laya V2.6 Layer15 Full Attention Tournament](Laya_V26_Layer15_FullAttention_Tournament_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V26_Layer15_FullAttention_Tournament_Colab.ipynb) |
 | [Laya V2.8 Layer15 FastWindowMemory](Laya_V28_Layer15_FastWindowMemory_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V28_Layer15_FastWindowMemory_Colab.ipynb) |
 | [Laya V2.9.1 All-Global FastWindowMemory + Hugging Face Standalone](Laya_V29_AllGlobal_FastWindowMemory_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V29_AllGlobal_FastWindowMemory_Colab.ipynb) |
+| [Laya V3.0 SlidingWindowFusion: W33/W65/W97/W129, 0.99 teacher cosine target](Laya_V30_SlidingWindowFusion_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V30_SlidingWindowFusion_Colab.ipynb) |
+| [Laya V3.1 Layer 15 Cellular-Dilated Fusion](Laya_V31_Layer15_Cellular_Dilated_Fusion_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V31_Layer15_Cellular_Dilated_Fusion_Colab.ipynb) |
 | [Laya V2.9 Mathematical Audit](Laya_V29_Mathematical_Audit_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V29_Mathematical_Audit_Colab.ipynb) |
 | [Laya V2.9 MultiscaleCeNN Full Attention](Laya_V29_MultiscaleCeNN_FullAttention_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V29_MultiscaleCeNN_FullAttention_Colab.ipynb) |
 | [Laya V3.0 Fourier Spectral Replacement Audit](Laya_V30_Fourier_Spectral_Replacement_Audit_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V30_Fourier_Spectral_Replacement_Audit_Colab.ipynb) |
