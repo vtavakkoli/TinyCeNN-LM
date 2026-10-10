@@ -139,3 +139,62 @@ def test_manifest_enforces_full_coverage(tmp_path):
             "runtime_format": 1,
             "global_layers": [0], "sliding_layers": [0]
         })
+
+
+def test_notebook_global_replacement_matches_exported_runtime_exactly():
+    """Catch drift between the *trained* V2.9 notebook and exported code."""
+    from transformers import AutoModel, ModernBertConfig, __version__
+    if __version__ != "4.57.6":
+        pytest.skip("Pinned local ModernBERT RoPE / SDPA path")
+    import copy
+    import math
+    import torch.nn as nn
+    import torch.nn.functional as F
+    from transformers.models.modernbert.modeling_modernbert import apply_rotary_pos_emb
+    from tinycenn_lm.laya_lab.pdelta import PDelta3GDN2CLVRAttention
+    from tinycenn_lm.laya_lab.core import _depthwise_sequence_conv, _valid_tokens
+    from tinycenn_lm.standalone_all_attention_runtime import FastWindowAttention
+
+    notebook = json.loads((ROOT/"notebooks"/
+        "Laya_V29_AllGlobal_FastWindowMemory_Colab.ipynb").read_text())
+    trained_source = "".join(notebook["cells"][4]["source"])
+    context = {
+        "torch": torch, "nn": nn, "F": F, "copy": copy, "math": math,
+        "PDelta3GDN2CLVRAttention": PDelta3GDN2CLVRAttention,
+        "_depthwise_sequence_conv": _depthwise_sequence_conv,
+        "_valid_tokens": _valid_tokens,
+        "apply_rotary_pos_emb": apply_rotary_pos_emb,
+    }
+    exec(compile(trained_source, "<real_v29_notebook>", "exec"), context)
+    real_class = context["PDeltaV28FastWindowMemory"]
+
+    torch.manual_seed(2028)
+    config = ModernBertConfig(
+        vocab_size=64, hidden_size=32, intermediate_size=48,
+        num_hidden_layers=4, num_attention_heads=2,
+        global_attn_every_n_layers=3, local_attention=8,
+        max_position_embeddings=128, reference_compile=False,
+        pad_token_id=0, attention_dropout=0.0,
+        embedding_dropout=0.0, mlp_dropout=0.0,
+    )
+    teacher = AutoModel.from_config(config, attn_implementation="sdpa")
+    original = teacher.layers[0].attn
+    notebook_model = real_class(
+        original, local_window=17, landmark_stride=4,
+        feature_dim=8, max_landmarks=8
+    ).eval()
+    standalone_model = FastWindowAttention(
+        original, local_window=17, landmark_stride=4,
+        feature_dim=8, max_landmarks=8
+    ).eval()
+    assert set(notebook_model.state_dict()) == set(standalone_model.state_dict()), (
+        set(notebook_model.state_dict()) ^ set(standalone_model.state_dict())
+    )
+    standalone_model.load_state_dict(notebook_model.state_dict(), strict=True)
+    x = torch.randn(2,19,32)
+    position_ids = torch.arange(19)[None].expand(2,-1)
+    mask = torch.ones(2,19,dtype=torch.long)
+    with torch.no_grad():
+        expected = notebook_model(x,attention_mask=mask,position_ids=position_ids)[0]
+        actual = standalone_model(x,attention_mask=mask,position_ids=position_ids)[0]
+    torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
