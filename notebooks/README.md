@@ -1,6 +1,6 @@
 # Notebook catalog
 
-All **78 notebooks** live under this directory: **48 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
+All **84 notebooks** live under this directory: **54 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
 
 [Project overview](../README.md) · [Model status](../MODEL_STATUS.md) · [Archived notebooks](archive/README.md) · [Path migration](../docs/NOTEBOOK_MIGRATION.md)
 
@@ -34,6 +34,12 @@ The core labels carry forward the existing model-status guide; this reorganizati
 | [Laya V2.6 Hard Full-Attention Tournament](Laya_Integrated_Memory_V26_FullAttention_Tournament_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_Integrated_Memory_V26_FullAttention_Tournament_Colab.ipynb) |
 | [Laya V2.7 PDelta3 Local32 + AttentionCeNN](Laya_V27_PDelta3_Local32_AttentionCeNN_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V27_PDelta3_Local32_AttentionCeNN_Colab.ipynb) |
 | [Laya V2.8 Fast Full-Attention-First PDelta3 + Local32](Laya_V28_Fast_FullAttention_First_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V28_Fast_FullAttention_First_Colab.ipynb) |
+| [Laya V2.6 Layer15 Full Attention Tournament](Laya_V26_Layer15_FullAttention_Tournament_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V26_Layer15_FullAttention_Tournament_Colab.ipynb) |
+| [Laya V2.8 Layer15 FastWindowMemory](Laya_V28_Layer15_FastWindowMemory_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V28_Layer15_FastWindowMemory_Colab.ipynb) |
+| [Laya V2.9.1 All-Global FastWindowMemory + Hugging Face Standalone](Laya_V29_AllGlobal_FastWindowMemory_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V29_AllGlobal_FastWindowMemory_Colab.ipynb) |
+| [Laya V2.9 Mathematical Audit](Laya_V29_Mathematical_Audit_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V29_Mathematical_Audit_Colab.ipynb) |
+| [Laya V2.9 MultiscaleCeNN Full Attention](Laya_V29_MultiscaleCeNN_FullAttention_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V29_MultiscaleCeNN_FullAttention_Colab.ipynb) |
+| [Laya V3.0 Fourier Spectral Replacement Audit](Laya_V30_Fourier_Spectral_Replacement_Audit_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V30_Fourier_Spectral_Replacement_Audit_Colab.ipynb) |
 | [Laya Integrated Memory V22](Laya_Integrated_Memory_V22_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_Integrated_Memory_V22_Colab.ipynb) |
 | [Laya Integrated Memory V23 Decision](Laya_Integrated_Memory_V23_Decision_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_Integrated_Memory_V23_Decision_Colab.ipynb) |
 | [Laya MemoryFusion](Laya_MemoryFusion_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_MemoryFusion_Colab.ipynb) |
