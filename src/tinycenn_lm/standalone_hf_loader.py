@@ -50,7 +50,8 @@ def load_model(path_or_repo, *, device="cpu", revision=None, token=None):
     model.load_state_dict(weights, strict=True)
     model.to(device).eval()
     model.requires_grad_(False)
-    tokenizer = AutoTokenizer.from_pretrained(str(root / "tokenizer"))
+    tokenizer = (AutoTokenizer.from_pretrained(str(root / "tokenizer"))
+                 if (root / "tokenizer").is_dir() else None)
     return model, tokenizer
 
 
