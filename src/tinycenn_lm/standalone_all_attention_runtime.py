@@ -7,6 +7,8 @@ Depends only on torch, transformers==4.57.6, and safetensors via loader.
 Global layers: V2.9 FastWindowMemory (W1024 default; quadratic at 512).
 Sliding layers: V3.0 SlidingWindowFusion (W129 default; finite-window SDPA).
 """
+from __future__ import annotations
+
 """Self-contained V2.9 FastWindowMemory typed-decision runtime.
 
 This module is copied into each exported Hugging Face model repository.
@@ -14,8 +16,6 @@ It deliberately never imports TinyCeNN-LM, Laya, or local project modules.
 Runtime dependencies: torch, transformers==4.57.6 and safetensors.
 The Hugging Face Hub client is needed only to download a remote repository.
 """
-from __future__ import annotations
-
 import copy
 import json
 import math
