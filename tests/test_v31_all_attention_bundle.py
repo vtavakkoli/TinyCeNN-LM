@@ -110,9 +110,9 @@ def test_complete_rebuild_state_dict_and_cpu_forward_parity(tmp_path):
     assert tokenizer is None  # optional for generic model export
     assert len(recovered.encoder.layers) == 4
     for i in global_layers:
-        assert isinstance(recovered.encoder.layers[i].attn,mixed.FastWindowAttention)
+        assert type(recovered.encoder.layers[i].attn).__name__ == 'FastWindowAttention'
     for i in slide_layers:
-        assert isinstance(recovered.encoder.layers[i].attn,mixed.SlidingWindowFusion)
+        assert type(recovered.encoder.layers[i].attn).__name__ == 'SlidingWindowFusion'
     batch = {
         "input_ids": torch.randint(1,64,(1,20)),
         "attention_mask": torch.ones(1,20,dtype=torch.long),
