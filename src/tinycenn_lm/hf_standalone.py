@@ -13,8 +13,8 @@ from typing import Any, Mapping
 import torch
 
 
-def export_standalone_bundle(*, model, tokenizer, output_dir,
-                             runtime_source, manifest, encoder_config,
+def export_standalone_bundle(*, model, output_dir, runtime_source, manifest,
+                             tokenizer=None, encoder_config=None,
                              report=None, loader_source=None):
     """Export a self-contained model with safetensors and executable runtime."""
     from safetensors.torch import save_file
@@ -29,10 +29,12 @@ def export_standalone_bundle(*, model, tokenizer, output_dir,
     (root / "bundle.json").write_text(
         json.dumps(manifest, indent=2, allow_nan=False), encoding="utf-8"
     )
-    (root / "encoder").mkdir(exist_ok=True)
-    encoder_config.save_pretrained(str(root / "encoder"))
-    (root / "tokenizer").mkdir(exist_ok=True)
-    tokenizer.save_pretrained(str(root / "tokenizer"))
+    if encoder_config is not None:
+        (root / "encoder").mkdir(exist_ok=True)
+        encoder_config.save_pretrained(str(root / "encoder"))
+    if tokenizer is not None:
+        (root / "tokenizer").mkdir(exist_ok=True)
+        tokenizer.save_pretrained(str(root / "tokenizer"))
     source = Path(runtime_source)
     if not source.is_file():
         raise FileNotFoundError(source)
@@ -161,7 +163,7 @@ def upload_standalone_to_hub(folder, repo_id, *, token=None, private=True,
     from huggingface_hub import HfApi
     folder = Path(folder)
     for name in ("bundle.json", "runtime.py", "load_model.py",
-                 "model.safetensors", "README.md", "encoder/config.json"):
+                 "model.safetensors", "README.md"):
         if not (folder / name).is_file():
             raise FileNotFoundError(f"Incomplete model bundle: {name}")
     api = HfApi(token=token)
