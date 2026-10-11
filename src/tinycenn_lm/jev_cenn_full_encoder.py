@@ -27,7 +27,7 @@ def exact_centered_window_offsets(window: int, device=None):
     window=int(window)
     if window<1:
         raise ValueError("window must be positive")
-    return torch.arange(-(window-1)//2, window//2+1,device=device)
+    return torch.arange(-((window-1)//2), window//2+1,device=device)
 
 
 def stable_window_attention(q: Tensor,k: Tensor,v: Tensor,
