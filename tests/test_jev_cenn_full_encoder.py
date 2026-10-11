@@ -75,7 +75,12 @@ def test_zero_correction_reproduces_exact_previous_two_window_layer():
     torch.testing.assert_close(plain,corrected,rtol=0.,atol=0.)
     assert upgraded.correction_up.weight.abs().max()==0.
     upgraded.requires_grad_(True)
-    corrected.square().mean().backward()
+    # The parity outputs above were computed under no_grad. Run a fresh
+    # differentiable forward to verify low-rank correction receives gradients.
+    with torch.enable_grad():
+        train_output=upgraded(
+            x,attention_mask=mask,position_ids=positions)[0]
+        train_output.square().mean().backward()
     assert upgraded.correction_up.weight.grad is not None
     assert upgraded.correction_up.weight.grad.abs().sum()>0
 
