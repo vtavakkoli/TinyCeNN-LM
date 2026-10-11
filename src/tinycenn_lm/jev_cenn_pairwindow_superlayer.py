@@ -212,6 +212,7 @@ class JevCeNNPairWindowSuperLayer(nn.Module):
         # controls QKV in the second, globally-reaching dilated attention.
         cellular1=self.cenn(hidden_states,valid) if self._use_cenn else 0.0
         mid=hidden_states+first+torch.sigmoid(self.cenn_gain1)*cellular1
+        self.last_mid=mid if self.training else None
         second=self._attention(mid,valid,position_ids,stage=2)
         cellular2=self.cenn(mid,valid) if self._use_cenn else 0.0
         hidden=mid+second+torch.sigmoid(self.cenn_gain2)*cellular2
