@@ -14,6 +14,9 @@ def collect_projection_io(model, names, batches, token_budget=2048, seed=2030):
     """Collect matched linear inputs and outputs from the unmodified target layer."""
     if token_budget < 64:
         raise ValueError("token_budget must be at least 64")
+    # Spread the finite budget across ALL calibration batches instead of
+    # taking the first few full-length examples (strong source of overfitting).
+    samples_per_batch = max(16, math.ceil(token_budget / max(1, len(batches))))
     samples = {name: [[], [], 0] for name in names}
     hooks = []
     for name in names:
@@ -27,7 +30,7 @@ def collect_projection_io(model, names, batches, token_budget=2048, seed=2030):
                 return
             x = args[0].detach().reshape(-1, mod.in_features)
             y = output.detach().reshape(-1, mod.out_features)
-            n = min(token_budget-collected, x.shape[0])
+            n = min(token_budget-collected, samples_per_batch, x.shape[0])
             if n <= 0:
                 return
             ids = torch.linspace(0, x.shape[0]-1, steps=n, device=x.device).long()
