@@ -140,7 +140,7 @@ def test_colab_is_only_layer15_blind_dev_ablation():
         "teacher_logits", "decisions_and_accuracy()",
         "delta_agreement_pp_vs_full", "whole_model_median_ms",
         "RECOVERY_STEPS", "l15_recovery_", "probe_cache", "audit_cache",
-        "jej_dummy_value_that_should_not_appear" if False else "no official test",
+        "official_test_split_used",
     ):
         assert key in text,key
     assert 'split="test"' not in text
