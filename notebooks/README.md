@@ -1,6 +1,6 @@
 # Notebook catalog
 
-All **93 notebooks** live under this directory: **63 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
+All **94 notebooks** live under this directory: **64 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
 
 [Project overview](../README.md) · [Model status](../MODEL_STATUS.md) · [Archived notebooks](archive/README.md) · [Path migration](../docs/NOTEBOOK_MIGRATION.md)
 
@@ -40,6 +40,7 @@ The core labels carry forward the existing model-status guide; this reorganizati
 | [Laya V3.0 SlidingWindowFusion: W33/W65/W97/W129, 0.99 teacher cosine target](Laya_V30_SlidingWindowFusion_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V30_SlidingWindowFusion_Colab.ipynb) |
 | [Laya V3.1 All-Attention Conversion + Joint Fine-tuning + HF Publish](Laya_V31_AllAttention_FineTune_HF_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V31_AllAttention_FineTune_HF_Colab.ipynb) |
 | [Jev_CeNN — CUDA Optimized All-30-Attention + HF Export](Jev_CeNN_CUDA_Fast_AllAttention_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Jev_CeNN_CUDA_Fast_AllAttention_Colab.ipynb) |
+| [Jev_CeNN — Single Global Layer-15 Branch Ablation + Recovery](Jev_CeNN_Layer15_Branch_Ablation_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Jev_CeNN_Layer15_Branch_Ablation_Colab.ipynb) |
 | [Laya V3.5 All-Full Fused Triton CUDA](Laya_V35_AllFullAttention_FusedTriton_CUDA_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V35_AllFullAttention_FusedTriton_CUDA_Colab.ipynb) |
 | [Jev-CeNN Attention-Free Feasibility: Global + Sliding (0.99 Goal)](Jev_CeNN_Attention_Free_Global_Sliding_Feasibility_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Jev_CeNN_Attention_Free_Global_Sliding_Feasibility_Colab.ipynb) |
 | [Laya V3.3 Retrieval Oracle Gaussian VAE Audit](Laya_V33_Retrieval_Oracle_Gaussian_VAE_Audit_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V33_Retrieval_Oracle_Gaussian_VAE_Audit_Colab.ipynb) |
