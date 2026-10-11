@@ -15,10 +15,44 @@ import copy
 import torch
 from torch import nn, Tensor
 import torch.nn.functional as F
+from transformers.models.modernbert.modeling_modernbert import apply_rotary_pos_emb
 
 from tinycenn_lm.jev_cenn_pairwindow_superlayer import (
     JevCeNNPairWindowSuperLayer, BypassModernBertLayer, pair_reachable,
 )
+
+
+def exact_centered_window_offsets(window: int, device=None):
+    """Exactly W keys, including even W (W512 has -255..+256 offsets)."""
+    window=int(window)
+    if window<1:
+        raise ValueError("window must be positive")
+    return torch.arange(-((window-1)//2), window//2+1,device=device)
+
+
+def stable_window_attention(q: Tensor,k: Tensor,v: Tensor,
+                            valid: Tensor, window: int) -> Tensor:
+    """CUDA-native SDPA with an exact W-token centered mask.
+
+    Uses fused torch SDPA instead of O(T*W*D) materialized gather tensors.
+    Accumulation and masked/padded behavior are delegated to PyTorch SDPA.
+    """
+    b,h,t,d=q.shape
+    window=int(window)
+    if window<1:
+        raise ValueError("window must be >=1")
+    if valid.shape!=(b,t):
+        raise ValueError("valid mask must be [B,T]")
+    i=torch.arange(t,device=q.device)
+    # Even windows are asymmetric by one index: W512 = [-255,+256].
+    left=(window-1)//2
+    right=window-1-left
+    offsets=i[None,:]-i[:,None]
+    allowed=(offsets>=-left)&(offsets<=right)
+    allowed=allowed[None,None,:,:]&valid[:,None,None,:].bool()
+    y=F.scaled_dot_product_attention(
+        q,k,v,attn_mask=allowed,dropout_p=0.0,is_causal=False)
+    return y*valid[:,None,:,None].to(y.dtype)
 
 
 def group_plan(num_encoder_layers: int) -> tuple[tuple[int, int, int], ...]:
@@ -46,6 +80,7 @@ class JevCeNNGroupSuperLayer(JevCeNNPairWindowSuperLayer):
 
     def __init__(self, teacher_global: nn.Module, teacher_sliding: nn.Module,
                  *, correction_rank: int = 96,
+                 local_window: int | None = None,
                  local_radius: int = 22, stride: int = 23,
                  dilated_radius: int = 22, max_len: int = 512):
         super().__init__(
@@ -53,6 +88,11 @@ class JevCeNNGroupSuperLayer(JevCeNNPairWindowSuperLayer):
             local_radius=local_radius,stride=stride,
             dilated_radius=dilated_radius,max_len=max_len,
         )
+        # None preserves exact v1 superlayer function/checkpoint parity.
+        # The full-encoder W512 experiment explicitly supplies 512.
+        self.local_window=None if local_window is None else int(local_window)
+        if self.local_window is not None and not (1<=self.local_window<=max_len):
+            raise ValueError("Expected 1 <= local_window <= max_len")
         hidden=self.num_heads*self.head_dim
         self.correction_rank=int(correction_rank)
         if self.correction_rank < 0:
@@ -63,6 +103,21 @@ class JevCeNNGroupSuperLayer(JevCeNNPairWindowSuperLayer):
             self.correction_up=nn.Linear(correction_rank,hidden,bias=False)
             # Preserve original two-window function at construction.
             nn.init.zeros_(self.correction_up.weight)
+
+    def _attention(self,hidden_states,valid,position_ids,
+                   *,stage:int,mask=None):
+        if stage!=1 or self.local_window is None:
+            return super()._attention(
+                hidden_states,valid,position_ids,stage=stage,mask=mask)
+        b,t,d=hidden_states.shape
+        states=self.norm1(hidden_states)
+        qkv=self.qkv1(states).view(b,t,3,self.num_heads,self.head_dim)
+        q,k,v=qkv.transpose(3,1).unbind(2)
+        cos,sin=self.rope1(qkv,position_ids=position_ids)
+        q,k=apply_rotary_pos_emb(q,k,cos,sin)
+        context=stable_window_attention(q,k,v,valid,self.local_window)
+        return (self.out1(context.transpose(1,2).reshape(b,t,d)) *
+                valid[:,:,None].to(hidden_states.dtype))
 
     def forward(self,hidden_states:Tensor,attention_mask=None,
                 sliding_window_mask=None,position_ids=None,

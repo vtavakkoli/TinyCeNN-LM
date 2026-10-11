@@ -75,9 +75,12 @@ def sparse_attention(q:Tensor,k:Tensor,v:Tensor,valid:Tensor,
     valid_keys=valid[:,gather_index]&in_bounds[None,:,:]
     scores=(q.unsqueeze(3).float()*kk.float()).sum(-1)*d**-0.5
     scores=scores.masked_fill(~valid_keys[:,None,:,:],-1e4)
-    probabilities=torch.softmax(scores,dim=-1).to(v.dtype)
-    out=(probabilities.unsqueeze(-1)*vv).sum(3)
-    return out*valid[:,None,:,None].to(out.dtype)
+    probabilities=torch.softmax(scores,dim=-1)
+    # Accumulate weighted values in FP32. FP16/BF16 weight*value
+    # accumulation may overflow on deep compressed encoder activations.
+    out=(probabilities.unsqueeze(-1)*vv.float()).sum(3)
+    out=out*valid[:,None,:,None].to(out.dtype)
+    return out.to(v.dtype)
 
 
 class CellularMultiscale(nn.Module):

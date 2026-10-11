@@ -31,7 +31,7 @@ and task head preserved. This is 9 experimental compression units + 1 native
 tail: **10 active encoder blocks**.
 
 The superlayer uses two sequential query-dependent sliding-attention
-operations (W45 normal then W45 dilated at stride23), two multiscale CeNN
+operations (**exact W512 first window with GPU-native SDPA** then W45 dilated at stride23), two multiscale CeNN
 injections before the second attention's QKV and output, and one FFN.
 An optional rank-96 zero-initialized output correction learns residual
 errors; it increases compute but starts as exactly the original superlayer.
@@ -54,7 +54,7 @@ overhead compared with fused native SDPA.
   quality claims are exploratory**, not an independently held-out TEST.
 - Batch-wise frozen teacher hooks capture original inputs at every group
   start and outputs after the first and third complete original layers,
-  stored as CPU FP16; one full teacher forward supplies all nine groups.
+  stored as CPU FP32, with a finite-value check to prevent the FP16 overflow observed at group 18–20; one full teacher forward supplies all nine groups.
 - For group \(g\), pretrain its CeNN to reconstruct original
   first-layer residual, then jointly train only that group's superlayer
   against the original three-block target, including first-layer
@@ -77,7 +77,7 @@ overhead compared with fused native SDPA.
 
 ## Tuning and replay
 
-Default starting point is **100 CeNN warmup steps + 600 superlayer steps
+Default starting point is **150 CeNN warmup steps + 900 superlayer steps
 per triple**, \`CORRECTION_RANK=96\`, \`ROLL_OUT_WEIGHT=0.5\`,
 \`COSINE_WEIGHT=3.0\` and \`JOINT_STEPS=120\`. These are **hypotheses**, not
 proven optimized hyperparameters. If a GPU runtime is interrupted,
@@ -107,3 +107,42 @@ tested shape. *A gate is never silently overridden to allow publication.*
 No automatic Hugging Face upload or official TEST usage is provided.
 This is a new experimental architecture, not a modification of the
 existing verified Jev_CeNN release.
+
+## October 11 correction: real changed-model training + NaN guards + exact W512
+
+The user-run version 1 logs show cumulative DEV teacher agreement falling
+from **0.93125** after the first group (0–2) to **0.48125** after six groups
+(0–17), and **0.40625** after group 18–20. The layer-18 AUDIT produced NaN
+and `json.dumps(..., allow_nan=False)` stopped execution. This is not an
+acceptable compression result. The likely contributor is the old unconditional
+CPU FP16 conversion of deep teacher activations; the log itself does not prove
+the numerical root cause.
+
+V2 changes:
+
+1. The first window contains **exactly 512 positions** with offsets -255 to
+   +256, not 511 or 513. It uses PyTorch native CUDA SDPA with a strict
+   centered bool mask; the second W45/stride23 path is unchanged.
+2. The teacher cache stores *FP32* activations, and teacher/student training
+   defaults to **FP32 on GPU** (`USE_FP16_AMP=False`). The second sparse
+   attention path accumulates weighted values in FP32 as well. Full precision
+   consumes more RAM and can reduce throughput, but prevents silent half
+   overflow and gives a reliable accuracy baseline. A later benchmark can
+   re-enable AMP on GPUs with validated BF16 numerical behavior.
+3. After local 3→1 training, each candidate is installed **into the already
+   compressed full student model**. The new
+   `FEEDBACK_STEPS_PER_GROUP=100` updates only the installed superlayer,
+   backpropagating actual typed-decision gold and frozen-teacher action/logit
+   loss through the changed model. It selects the best checkpoint using
+   independent development decisions, and only then runs blind local audit.
+   Earlier groups, native downstream layers and task head stay frozen.
+4. Nonfinite source activations, valid-token outputs, losses and downstream
+   logits now raise explicit diagnostic errors. The experiment does not save
+   NaN-laden JSON or label a numerical failure as good fidelity.
+5. V2 per-group filenames include `W512_FP32_v2`; old W45 checkpoints
+   cannot be loaded accidentally. Saved checkpoints also include a prefix
+   fingerprint, so a group trained behind one sequence of compressed layers
+   will not be silently reused behind a different prefix.
+
+**These changes do not guarantee 0.99 cosine or speedup.** Full W512 is
+compute-intensive; speed must be measured with paired CUDA events.
