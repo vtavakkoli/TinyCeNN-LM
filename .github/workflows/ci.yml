@@ -24,7 +24,7 @@ jobs:
       - name: Standalone model CPU parity (Transformers 4.57.6)
         run: |
           python -m pip install "transformers==4.57.6"
-          pytest -q tests/test_hf_standalone_bundle.py tests/test_v31_all_attention_bundle.py tests/test_jev_cenn_attention_free.py
+          pytest -q tests/test_hf_standalone_bundle.py tests/test_v31_all_attention_bundle.py tests/test_jev_cenn_layer15_ablation.py tests/test_jev_cenn_attention_free.py
       - name: Python syntax check
         run: python -m compileall -q src scripts tests
       - name: Shell syntax check
