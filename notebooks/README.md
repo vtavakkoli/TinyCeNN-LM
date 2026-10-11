@@ -1,6 +1,6 @@
 # Notebook catalog
 
-All **98 notebooks** live under this directory: **68 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
+All **100 notebooks** live under this directory: **70 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
 
 [Project overview](../README.md) · [Model status](../MODEL_STATUS.md) · [Archived notebooks](archive/README.md) · [Path migration](../docs/NOTEBOOK_MIGRATION.md)
 
@@ -42,6 +42,8 @@ The core labels carry forward the existing model-status guide; this reorganizati
 | [Jev_CeNN — CUDA Optimized All-30-Attention + HF Export](Jev_CeNN_CUDA_Fast_AllAttention_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Jev_CeNN_CUDA_Fast_AllAttention_Colab.ipynb) |
 | [Jev_CeNN — Single Global Layer-15 Branch Ablation + Recovery](Jev_CeNN_Layer15_Branch_Ablation_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Jev_CeNN_Layer15_Branch_Ablation_Colab.ipynb) |
 | [Jev_CeNN 2-Window Global Coverage: True Encoder Layers 15–17 to One](Jev_CeNN_2Window_3Layers_To_1_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Jev_CeNN_2Window_3Layers_To_1_Colab.ipynb) |
+| [Jev_CeNN Full Encoder 28→10 Progressive 3-to-1 Two-Window CeNN](Jev_CeNN_AllLayers_3to1_Progressive_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Jev_CeNN_AllLayers_3to1_Progressive_Colab.ipynb) |
+| [Jev_CeNN Bonsai G128 Layerwise Ablation](Jev_CeNN_Bonsai_G128_Layerwise_Ablation_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Jev_CeNN_Bonsai_G128_Layerwise_Ablation_Colab.ipynb) |
 | [Laya V3.7 Attention Necessity Fast SDPA Ablation](Laya_V37_Attention_Necessity_Fast_SDPA_Ablation_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V37_Attention_Necessity_Fast_SDPA_Ablation_Colab.ipynb) |
 | [Laya V3.8 Greedy Layerwise Fast Accurate](Laya_V38_Greedy_Layerwise_Fast_Accurate_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V38_Greedy_Layerwise_Fast_Accurate_Colab.ipynb) |
 | [Laya V3.6 All-Attention Routed and Sliding Native SDPA](Laya_V36_AllAttention_RoutedAndSliding_NativeSDPA_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V36_AllAttention_RoutedAndSliding_NativeSDPA_Colab.ipynb) |

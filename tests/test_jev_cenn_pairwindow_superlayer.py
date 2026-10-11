@@ -139,7 +139,10 @@ def test_notebook_is_experiment_and_never_publishes():
         assert fragment in code,fragment
     assert 'split="test"' not in code
     assert "upload_standalone_to_hub" not in code
-    assert all(not c.get("outputs") and c.get("execution_count") is None
+    # Historical experiment outputs are valuable research evidence:
+    # allow them when they belong to executed cells. The NEW full-encoder
+    # Colab remains a clean, never-executed template.
+    assert all(not c.get("outputs") or c.get("execution_count") is not None
                for c in doc["cells"] if c["cell_type"]=="code")
     for i,c in enumerate(doc["cells"]):
         if c["cell_type"]!="code" or i==1:continue
