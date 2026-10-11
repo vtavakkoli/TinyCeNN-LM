@@ -80,7 +80,7 @@ class JevCeNNGroupSuperLayer(JevCeNNPairWindowSuperLayer):
 
     def __init__(self, teacher_global: nn.Module, teacher_sliding: nn.Module,
                  *, correction_rank: int = 96,
-                 local_window: int = 512,
+                 local_window: int | None = None,
                  local_radius: int = 22, stride: int = 23,
                  dilated_radius: int = 22, max_len: int = 512):
         super().__init__(
@@ -88,8 +88,10 @@ class JevCeNNGroupSuperLayer(JevCeNNPairWindowSuperLayer):
             local_radius=local_radius,stride=stride,
             dilated_radius=dilated_radius,max_len=max_len,
         )
-        self.local_window=int(local_window)
-        if self.local_window<1 or self.local_window>max_len:
+        # None preserves exact v1 superlayer function/checkpoint parity.
+        # The full-encoder W512 experiment explicitly supplies 512.
+        self.local_window=None if local_window is None else int(local_window)
+        if self.local_window is not None and not (1<=self.local_window<=max_len):
             raise ValueError("Expected 1 <= local_window <= max_len")
         hidden=self.num_heads*self.head_dim
         self.correction_rank=int(correction_rank)
@@ -104,7 +106,7 @@ class JevCeNNGroupSuperLayer(JevCeNNPairWindowSuperLayer):
 
     def _attention(self,hidden_states,valid,position_ids,
                    *,stage:int,mask=None):
-        if stage!=1:
+        if stage!=1 or self.local_window is None:
             return super()._attention(
                 hidden_states,valid,position_ids,stage=stage,mask=mask)
         b,t,d=hidden_states.shape
