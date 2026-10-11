@@ -26,7 +26,8 @@ def load_bonsai(path_or_repo, device='cuda', token=None, revision=None):
         root=Path(snapshot_download(repo_id=str(path_or_repo), token=token, revision=revision))
     manifest=json.loads((root/'bundle.json').read_text())
     meta=json.loads((root/'bonsai_meta.json').read_text())
-    assert manifest.get('architecture') == 'laya-v31-all-attention'
+    if manifest.get('architecture') not in ('laya-v31-all-attention', 'Jev_CeNN'):
+        raise ValueError(f"Unsupported Jev_CeNN source architecture: {manifest.get('architecture')!r}")
     assert meta.get('format') == 'bonsai_inspired_q2_g128_v1'
     base_runtime=_import('_bonsai_runtime_base',root/'runtime.py')
     qr=_import('_bonsai_runtime_ops',root/'jev_bonsai_g128_runtime.py')
