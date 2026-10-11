@@ -12,7 +12,7 @@ Ablation semantics:
  - "minus_cenn" eliminates additive cellular-convolution residual.
  - "static_routing" deletes query-conditioned route changes, retains learned
     per-head route logits.
- - "only_X" executes one branch with probability 1; "only_cenn" runs only
+ - "only_X" executes one branch with probability 1 and NO CeNN residual; "only_cenn" runs only
     trained cellular convolution without attention (diagnostic, not a fair
     like-for-like trained standalone model).
 
@@ -128,7 +128,7 @@ class JevGlobalBranchAblation(nn.Module):
             mixture[...,idx:idx+1]*channels[name]
             for idx,name in enumerate(BRANCHES) if name in channels
         )
-        if self.mode!="minus_cenn":
+        if self.mode!="minus_cenn" and not self.mode.startswith("only_"):
             cellular=_depthwise_sequence_conv(
                 v,base.local_weight,causal=False)
             gain=torch.sigmoid(base.conv_gain).to(v.dtype)[None,:,None,None]
