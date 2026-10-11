@@ -147,5 +147,7 @@ def test_colab_is_only_layer15_blind_dev_ablation():
     assert "upload_standalone_to_hub" not in text
     assert "student_eval.encoder.layers[LAYER].attn=module" in text
     assert "student_eval.encoder.layers[LAYER].attn=original_layer15" in text
-    assert all(c.get("execution_count") is None and not c.get("outputs")
+    # Saved GPU outputs in an existing experiment are evidence. They must be
+    # attached to executed cells; only new templates require blank outputs.
+    assert all(not c.get("outputs") or c.get("execution_count") is not None
                for c in blocks)
