@@ -52,6 +52,28 @@ def sdpa_full_or_window(q:Tensor,k:Tensor,v:Tensor,valid:Tensor,
     return out * valid[:,None,:,None].to(out.dtype)
 
 
+def cpu_state_snapshot(model: nn.Module) -> dict:
+    """Copy all state_dict entries to an independent CPU-safe checkpoint.
+
+    get_extra_state() may return a dict: the phase-2 curriculum checkpoints
+    include an _extra_state dictionary. Blind .detach() fails on this dict.
+    Preserve nested non-tensor entries for strict state_dict restoration.
+    """
+    def copy_state(value):
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu().clone()
+        if isinstance(value, dict):
+            return {k: copy_state(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [copy_state(v) for v in value]
+        if isinstance(value, tuple):
+            return tuple(copy_state(v) for v in value)
+        return copy.deepcopy(value)
+
+    return {key: copy_state(value)
+            for key, value in model.state_dict().items()}
+
+
 class FaithfulAttentionStage(nn.Module):
     def __init__(self, layer:nn.Module, *,window:int|None):
         super().__init__()
