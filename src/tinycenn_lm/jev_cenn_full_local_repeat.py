@@ -1,6 +1,11 @@
 """Four-pass full+local CeNN superlayer for controlled 3-to-1 experiments.
 
-Exact attention sequence: GLOBAL -> WINDOW -> GLOBAL -> WINDOW.
+Final attention sequence: GLOBAL -> WINDOW -> GLOBAL -> WINDOW.
+Supports differentiable attention-mask curriculum:
+  Phase 0 GLOBAL -> GLOBAL -> GLOBAL -> GLOBAL,
+  Phase 1 GLOBAL -> WINDOW -> GLOBAL -> GLOBAL,
+  Phase 2 GLOBAL -> WINDOW -> GLOBAL -> WINDOW.
+The transitions DO NOT replace QKV matrices or FFN/CeNN weights.
 "Global" sees all <= max_len tokens (including sequence edges), unlike
 an even-size centered W512 local mask. "Window" sees offsets -64..+64.
 Each attention uses native PyTorch scaled-dot-product attention (SDPA)
@@ -60,14 +65,16 @@ class FaithfulAttentionStage(nn.Module):
         self.head_dim=int(layer.attn.head_dim)
         self.window=window
 
-    def forward(self,x:Tensor,valid:Tensor,position_ids:Tensor)->Tensor:
+    def forward(self,x:Tensor,valid:Tensor,position_ids:Tensor,
+                *,force_global:bool=False)->Tensor:
         b,t,hidden=x.shape
         packed=self.qkv(self.norm(x)).view(
             b,t,3,self.num_heads,self.head_dim)
         q,k,v=packed.transpose(1,3).unbind(2)
         cos,sin=self.rope(packed,position_ids=position_ids)
         q,k=apply_rotary_pos_emb(q,k,cos,sin)
-        y=sdpa_full_or_window(q,k,v,valid,window=self.window)
+        y=sdpa_full_or_window(
+            q,k,v,valid,window=None if force_global else self.window)
         return (self.proj(y.transpose(1,2).reshape(b,t,hidden))
                 *valid[:,:,None].to(x.dtype))
 
@@ -127,9 +134,45 @@ class FullLocalRepeatCeNNSuperLayer(nn.Module):
             raise ValueError("correction_rank must be nonnegative")
         self._use_cenn=True
         self.last_first=None
+        # 0: FULL/FULL/FULL/FULL, 1: FULL/W129/FULL/FULL,
+        # 2: FULL/W129/FULL/W129 (the ONLY deployable topology).
+        # Python-side mode avoids a per-forward .item() GPU sync.
+        # get_extra_state/set_extra_state persist it in state_dict.
+        self._curriculum_phase=2
 
     def set_cenn_enabled(self,enabled:bool):
         self._use_cenn=bool(enabled)
+
+    @property
+    def curriculum_phase(self)->int:
+        return self._curriculum_phase
+
+    @property
+    def active_attention_topology(self)->tuple[str,str,str,str]:
+        if self._curriculum_phase==0:
+            return ("full","full","full","full")
+        if self._curriculum_phase==1:
+            return ("full",f"window{self.window}","full","full")
+        return ("full",f"window{self.window}","full",f"window{self.window}")
+
+    def set_curriculum_phase(self,phase:int):
+        """Switch only the attention *mask*. Never reinitialize learned QKV.
+
+        At phase 0, both future sliding stages attend globally.
+        At phase 1, the first future sliding stage uses its local mask.
+        At phase 2, BOTH local masks are active for inference and gating.
+        """
+        if type(phase) is not int or phase not in (0,1,2):
+            raise ValueError("Expected curriculum phase 0, 1 or 2")
+        self._curriculum_phase=phase
+
+    def get_extra_state(self):
+        return {"curriculum_phase":self._curriculum_phase}
+
+    def set_extra_state(self,state):
+        if not isinstance(state,dict):
+            raise ValueError("Invalid saved attention curriculum state")
+        self.set_curriculum_phase(state["curriculum_phase"])
 
     def forward(self,hidden_states:Tensor,attention_mask=None,
                 sliding_window_mask=None,position_ids=None,
@@ -143,8 +186,15 @@ class FullLocalRepeatCeNNSuperLayer(nn.Module):
             position_ids=torch.arange(t,device=hidden_states.device)[None,:]
         x=hidden_states
         for stage_index,stage in enumerate(self.stages):
+            # Staged teacher curriculum: full attention first, then
+            # narrow the second and fourth passes separately.
+            # Crucially, the learned attention weights are kept unchanged.
+            force_global=(
+                (stage_index==1 and self._curriculum_phase==0) or
+                (stage_index==3 and self._curriculum_phase<2)
+            )
             x=x+torch.sigmoid(self.attention_gain[stage_index])*stage(
-                x,valid,position_ids)
+                x,valid,position_ids,force_global=force_global)
             if stage_index in (1,3):
                 pair_index=stage_index//2
                 if self._use_cenn:
