@@ -190,6 +190,9 @@ def test_real_colab_is_clean_and_full_encoder_probes_are_isolated():
     for i,c in enumerate(nb["cells"]):
         if c["cell_type"]!="code":
             continue
-        assert c.get("execution_count") is None and not c.get("outputs")
+        # The historical all-group Colab now contains REAL saved GPU results.
+        # Preserve them as research evidence; only executed cells may carry
+        # saved outputs. The NEW selective Colab separately must remain clean.
+        assert not c.get("outputs") or c.get("execution_count") is not None
         if i!=1:
             ast.parse("".join(c["source"]),f"<allgroups cell{i}>")
