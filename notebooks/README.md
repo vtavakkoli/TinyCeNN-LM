@@ -1,6 +1,6 @@
 # Notebook catalog
 
-All **105 notebooks** live under this directory: **75 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
+All **106 notebooks** live under this directory: **76 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
 
 [Project overview](../README.md) · [Model status](../MODEL_STATUS.md) · [Archived notebooks](archive/README.md) · [Path migration](../docs/NOTEBOOK_MIGRATION.md)
 
@@ -47,6 +47,7 @@ The core labels carry forward the existing model-status guide; this reorganizati
 | [Jev_CeNN Global→W129→Global→W129 CeNN 600-Step 3→1](Jev_CeNN_GlobalLocal_x2_600Step_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Jev_CeNN_GlobalLocal_x2_600Step_Colab.ipynb) |
 | [Laya V40 Group18-20 Full Window CeNN Sweep](Laya_V40_Group18_20_FullWindow_CeNN1025_128_Sweep_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V40_Group18_20_FullWindow_CeNN1025_128_Sweep_Colab.ipynb) |
 | [Laya V41 Residual-Faithful CeNN Group 18–20](Laya_V41_ResidualFaithful_CeNN_Group18_20_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V41_ResidualFaithful_CeNN_Group18_20_Colab.ipynb) |
+| [Laya V42 Progressive All-Full Then All-Sliding CeNN](Laya_V42_Progressive_AllFull_Then_AllSliding_CeNN_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V42_Progressive_AllFull_Then_AllSliding_CeNN_Colab.ipynb) |
 | [Laya V39 Global CeNN Two-Sliding 3→1 Colab](Laya_V39_Global_CeNN_TwoSliding_3to1_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V39_Global_CeNN_TwoSliding_3to1_Colab.ipynb) |
 | [Jev_CeNN Bonsai G128 Layerwise Ablation](Jev_CeNN_Bonsai_G128_Layerwise_Ablation_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Jev_CeNN_Bonsai_G128_Layerwise_Ablation_Colab.ipynb) |
 | [Laya V3.7 Attention Necessity Fast SDPA Ablation](Laya_V37_Attention_Necessity_Fast_SDPA_Ablation_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V37_Attention_Necessity_Fast_SDPA_Ablation_Colab.ipynb) |

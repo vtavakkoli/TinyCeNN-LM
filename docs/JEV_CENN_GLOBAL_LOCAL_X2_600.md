@@ -13,6 +13,14 @@ architecture is not assured to fix the information deficit.
 
 ## New candidate
 
+The user run achieved local cosines **0.99150** at group 0–2 and
+**0.99652** at group 3–5 but the corresponding best recorded recovery
+teacher agreements were only **97.5%** and **98.75%**, respectively.
+This motivates a more stable training progression, without implying
+the 0.99 task-agreement gate has been met. Starting with four full passes
+may cost more FLOPs during the initial 100 updates. It is intended to
+make global contextual learning easier, not guarantee lower wall-clock time.
+
 Original 3 teacher blocks: \`Global+FFN → Sliding+FFN → Sliding+FFN\`.
 
 Proposed **ONE** candidate replacing the entire triple:
@@ -55,6 +63,24 @@ CACHE_BATCHES = 96
 BATCH = 2
 \`\`\`
 
+The new **attention curriculum** explicitly starts with full attention in
+all four passes, then gradually makes the second and fourth passes local,
+**without replacing the learned QKV/FFN/CeNN weights**:
+
+| Local optimizer updates | Training attention topology |
+|---|---|
+| 1–100 (100 updates) | FULL → FULL → FULL → FULL |
+| 101–240 (140 updates) | FULL → W129 → FULL → FULL |
+| 241–520 (280 updates) | FULL → W129 → FULL → W129 |
+| 521–600 (up to 80 updates) | Full-student task recovery with both W129 windows |
+
+Checkpoint selection for *local distillation* considers **only** the final
+full/W129/full/W129 phase. Phase 0 and 1 checkpoints can never be deployed,
+even if they achieve higher cosine before the window conversions. The
+curriculum phase is preserved in the model's state dictionary, so an
+accidentally resumed full-window checkpoint cannot silently claim to be
+the final two-window architecture.
+
 For each group, cache up to 192 distinct TRAIN decisions and fixed DEV-PROBE
 decisions with **one frozen teacher forward plus one current student prefix
 forward per batch**, in CPU FP32. The cache is unique to that group and
@@ -63,10 +89,12 @@ candidate**, alternating mostly *actual changed-student prefix input* and
 occasional teacher input. The targets are original teacher outputs after
 the full three-layer segment, plus a first-pair auxiliary teacher output.
 
-After local checkpoint selection on DEV-PROBE, install the full candidate.
-Run **up to 80** full-model recovery updates using frozen teacher decision
-distillation, gold CE and final-encoder hidden alignment. Save/restore the
-best DEV-GATE checkpoint; early stop when recovery consistently worsens.
+After local checkpoint selection on DEV-PROBE **in final sliding-window
+mode**, install the full candidate. Run **up to 80** full-model recovery
+updates using frozen teacher decision distillation, gold CE and final-encoder
+hidden alignment. Save/restore the best DEV-GATE checkpoint; early stop
+when recovery consistently worsens. **The selected recovery checkpoint must
+not reduce teacher agreement from the initial pre-recovery checkpoint.**
 No separate CeNN warmup optimizers or uncounted updates are made.
 
 The dataset split is case-disjoint 700 TRAIN cases, 80 PROBE cases, 140
