@@ -135,6 +135,18 @@ def test_notebook_syntax_and_independent_holdout_seal():
     assert "HOLDOUT_RECORDS" not in "\n".join(
         s for i,s in codes if i<10
     )
+    # The selective notebook has its own case partitions. Older Laya
+    # notebook trailing assertions once referenced undefined dev_items and
+    # PROBE_CACHE_BATCHES, aborting immediately after successful dataset load.
+    data_cell="".join(nb["cells"][3]["source"])
+    assert "len(train_items)" in data_cell
+    assert "len(probe_items)" in data_cell
+    assert "len(gate_items)" in data_cell
+    for obsolete in (
+        "dev_items", "PROBE_CACHE_BATCHES", "AUDIT_CACHE_BATCHES",
+        "cache_teacher_io(", "attn_io(", "local_metrics_from_cache(",
+    ):
+        assert obsolete not in full, f"Unexpected legacy reference: {obsolete}"
     assert 'split="test"' not in full
     assert "upload_standalone_to_hub" not in full
     for i,s in codes:
