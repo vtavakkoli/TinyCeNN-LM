@@ -2,6 +2,7 @@
 import ast
 import copy
 import json
+import io
 from pathlib import Path
 import pytest
 import torch
@@ -9,7 +10,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from tinycenn_lm.jev_cenn_full_local_repeat import (
-    FullLocalRepeatCeNNSuperLayer,sdpa_full_or_window,
+    FullLocalRepeatCeNNSuperLayer,sdpa_full_or_window,cpu_state_snapshot,
 )
 from tinycenn_lm.jev_cenn_full_encoder import (
     install_group,restore_group,
@@ -173,6 +174,50 @@ def test_curriculum_stage0_matches_full_four_pass_and_final_is_restored():
     assert candidate.active_attention_topology==("full",)*4
 
 
+
+@pytest.mark.parametrize("phase", [0,1,2])
+def test_real_curriculum_checkpoint_mixed_state_cpu_clone_and_strict_reload(phase):
+    # Reproduces the user's first phase-2 checkpoint crash at update 241.
+    torch.manual_seed(2028)
+    teacher=_tiny()
+    block=FullLocalRepeatCeNNSuperLayer(
+        teacher.layers[3],teacher.layers[4],teacher.layers[5],
+        window=9,max_len=24,correction_rank=8).eval()
+    block.set_curriculum_phase(phase)
+    snapshot=cpu_state_snapshot(block)
+    assert snapshot["_extra_state"]=={"curriculum_phase":phase}
+    assert isinstance(snapshot["_extra_state"],dict)
+    assert isinstance(snapshot["stages.0.qkv.weight"],torch.Tensor)
+    assert snapshot["stages.0.qkv.weight"].device.type=="cpu"
+    assert not snapshot["stages.0.qkv.weight"].requires_grad
+    snapshot["_extra_state"]["curriculum_phase"]=(phase+1)%3
+    assert block.curriculum_phase==phase
+    snapshot["_extra_state"]["curriculum_phase"]=phase
+    previous=snapshot["stages.0.qkv.weight"].clone()
+    with torch.no_grad():
+        block.stages[0].qkv.weight.add_(0.01)
+    torch.testing.assert_close(snapshot["stages.0.qkv.weight"],previous,
+                               rtol=0,atol=0)
+    fresh=FullLocalRepeatCeNNSuperLayer(
+        teacher.layers[3],teacher.layers[4],teacher.layers[5],
+        window=9,max_len=24,correction_rank=8).eval()
+    fresh.load_state_dict(snapshot,strict=True)
+    assert fresh.curriculum_phase==phase
+    torch.testing.assert_close(fresh.stages[0].qkv.weight,previous,
+                               rtol=0,atol=0)
+    # The generated checkpoint also supports torch.load(weights_only=True).
+    buf=io.BytesIO()
+    torch.save(snapshot,buf)
+    buf.seek(0)
+    disk=torch.load(buf,map_location="cpu",weights_only=True)
+    assert disk["_extra_state"]=={"curriculum_phase":phase}
+    restored=FullLocalRepeatCeNNSuperLayer(
+        teacher.layers[3],teacher.layers[4],teacher.layers[5],
+        window=9,max_len=24,correction_rank=8).eval()
+    restored.load_state_dict(disk,strict=True)
+    assert restored.active_attention_topology==fresh.active_attention_topology
+
+
 def test_notebook_has_exact_total_600_budget_and_sealed_final_holdout():
     nb=json.loads(NOTEBOOK.read_text(encoding="utf8"))
     codes=[(i,"".join(c["source"])) for i,c in enumerate(nb["cells"])
@@ -190,6 +235,8 @@ def test_notebook_has_exact_total_600_budget_and_sealed_final_holdout():
         "phase==2 and rank<best_rank",
         "assert block.curriculum_phase==2",
         "RECOVERY_MAX_AGREEMENT_DROP",
+        "return cpu_state_snapshot(model)",
+        "cpu_state_snapshot",
         "FULL_MODEL_RECOVERY_STEPS=80",
         "TOTAL_OPTIMIZER_STEPS==LOCAL_DISTILL_STEPS+FULL_MODEL_RECOVERY_STEPS==600",
         "FullLocalRepeatCeNNSuperLayer(",
