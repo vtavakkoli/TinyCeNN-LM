@@ -77,6 +77,24 @@ invalid markers, immutable weights and cached tokenization. The CUDA graph test 
 skipped without CUDA. GPU compilation, CUDA replay and FA2 require execution on
 supported hardware before deployment. No new held-out accuracy claim is made.
 
+## Recorded CPU smoke result
+
+[Machine-readable report](benchmarks/laya_fp16_cpu.json), using the actual full
+FP16 checkpoint, PyTorch 2.14.1+cpu, two CPU threads, one warmup and three single-call
+timing rounds per candidate. This short run is primarily a correctness check.
+
+| Workload | Original | Fastest accepted candidate | Ratio |
+|---|---:|---:|---:|
+| Batch 1, 128 tokens | 2483.1 ms | Device masks + gather: 2364.7 ms | 1.050× |
+| Batch 1, 512 tokens | 9387.6 ms | Marker SDPA: 9279.9 ms | 1.012× |
+| Two-question prediction API | 1549.2 ms | Prepared marker API: 1661.1 ms | 0.933× |
+
+Every tested decision matched. Maximum probability drift across the model-forward
+audits was 0.000118464; API drift was 0.0000125244. The CPU API was slower, and the
+small model-forward differences may be noise. These measurements do **not** establish
+a substantial speedup or predict the GPU result. The GPU notebook tests launch-overhead
+and kernel optimizations that could not be measured in this environment.
+
 ## Application API
 
 From the repository root, after downloading the pinned snapshot:
