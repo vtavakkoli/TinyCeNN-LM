@@ -25,6 +25,8 @@ The core labels carry forward the existing model-status guide; this reorganizati
 
 ## Laya / ModernBERT
 
+**Existing FP16 model, faster inference:** [Notebook](Laya_FP16_Fast_Inference_Colab.ipynb) · [Run in Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/codex/laya-fp16-fast-inference/notebooks/Laya_FP16_Fast_Inference_Colab.ipynb). Parity-gated SDPA, compilation and CUDA-graph benchmark; no retraining.
+
 **V2.5:** all encoder attention is replaced with local Delta/global CeNN, followed by a pooled MLP head. Training stages match V2.4; passing models can be uploaded to Hugging Face. [Architecture, evaluation gate and limitations](../docs/LAYA_V25.md).
 
 | Notebook | Run |

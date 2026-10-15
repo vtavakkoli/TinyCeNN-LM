@@ -8,6 +8,8 @@ Explore CeNN, integrated memory, delta-memory and compact feed-forward replaceme
 
 **New V2.5 experiment:** [Windowed Delta + multiscale CeNN for Laya](docs/LAYA_V25.md), retaining V2.4 training stages with conditional Hugging Face export. Full GPU results are pending.
 
+**Laya FP16 inference optimization:** [GPU benchmark notebook](notebooks/Laya_FP16_Fast_Inference_Colab.ipynb) · [Implementation and validation](docs/LAYA_FP16_FAST_INFERENCE.md). Uses the existing standalone FP16 weights; GPU speedup must be measured on your hardware.
+
 ## Choose a starting point
 
 | Goal | Track | Notebook |
