@@ -1,6 +1,6 @@
 # Notebook catalog
 
-All **106 notebooks** live under this directory: **76 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
+All **107 notebooks** live under this directory: **77 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
 
 [Project overview](../README.md) · [Model status](../MODEL_STATUS.md) · [Archived notebooks](archive/README.md) · [Path migration](../docs/NOTEBOOK_MIGRATION.md)
 
@@ -114,6 +114,7 @@ The core labels carry forward the existing model-status guide; this reorganizati
 | [CeNN Optimized Memory V2](CeNN_Optimized_Memory_V2_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/CeNN_Optimized_Memory_V2_Colab.ipynb) |
 | [CeNN Research Layers](CeNN_Research_Layers_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/CeNN_Research_Layers_Colab.ipynb) |
 | [CeNN UAMP Final Tournament](CeNN_UAMP_Final_Tournament_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/CeNN_UAMP_Final_Tournament_Colab.ipynb) |
+| [CeNN-X2 Dual-Timescale GPU Layer (experimental)](CeNN_X2_DualTimescale_GPU_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/CeNN_X2_DualTimescale_GPU_Colab.ipynb) |
 | [FlyCeNN Transformer Replacement](FlyCeNN_Transformer_Replacement_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/FlyCeNN_Transformer_Replacement_Colab.ipynb) |
 
 ## Evaluation and export
