@@ -1,6 +1,6 @@
 # Notebook catalog
 
-All **108 notebooks** live under this directory: **78 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
+All **109 notebooks** live under this directory: **79 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
 
 [Project overview](../README.md) · [Model status](../MODEL_STATUS.md) · [Archived notebooks](archive/README.md) · [Path migration](../docs/NOTEBOOK_MIGRATION.md)
 
@@ -74,6 +74,7 @@ The core labels carry forward the existing model-status guide; this reorganizati
 |---|---|
 | [Qwen35 08B CeNNMixer v4 DeltaCell](Qwen35_08B_CeNNMixer_v4_DeltaCell_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNNMixer_v4_DeltaCell_Colab.ipynb) |
 | [Qwen3.5 0.8B CeNN-X2 Middle-Layer Ablation (experimental)](Qwen35_08B_CeNN_X2_Middle_Layer_Ablation_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNN_X2_Middle_Layer_Ablation_Colab.ipynb) |
+| [Qwen3.5 0.8B CeNN-DeltaCell V3 Cellular Memory (experimental)](Qwen35_08B_CeNN_DeltaCell_V3_Cellular_Memory_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNN_DeltaCell_V3_Cellular_Memory_Colab.ipynb) |
 | [Qwen35 08B FlyCore from v3 Standalone](Qwen35_08B_FlyCore_from_v3_Standalone_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_FlyCore_from_v3_Standalone_Colab.ipynb) |
 | [Qwen35 08B FlyCore v2 from v3](Qwen35_08B_FlyCore_v2_from_v3_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_FlyCore_v2_from_v3_Colab.ipynb) |
 | [Qwen35 08B FlyEmbedding v31 Preservation First](Qwen35_08B_FlyEmbedding_v31_Preservation_First_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_FlyEmbedding_v31_Preservation_First_Colab.ipynb) |
