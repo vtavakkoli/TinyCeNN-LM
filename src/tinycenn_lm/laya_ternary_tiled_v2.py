@@ -104,62 +104,95 @@ class TiledTernaryLinear(TernaryCascadeLinear):
 
 
 @torch.no_grad()
-def refine_scales_from_activations(module,original,x,relative_ridge=0.03,
-                                  holdout_fraction=0.25):
-    """Fit FP16 scale per out-channel/G128; keep original scales on failure.
+def refine_scales_from_activations(module, original, x, relative_ridge=0.03,
+                                  holdout_fraction=0.25, output_chunk=64):
+    """Safely refit g128 scales; solve small normal equations on CPU.
 
-    Codes are frozen, not trained. Uses calibration inputs and original linear
-    teacher outputs (not development or audit). Ridge regression with anchor
-    to PTQ scales; accept only lower normalized error on held-out cal tokens.
+    The previous implementation called CUDA torch.linalg.solve() for every
+    output row and could fail with CUBLAS_STATUS_NOT_INITIALIZED. This variant
+    computes bounded per-output features (GPU native matmul), transfers only
+    those features to CPU, and solves at most 64 tiny ridge systems at once.
+    A failed chunk retains the original PTQ scales instead of crashing.
     """
     if not isinstance(module,TernaryCascadeLinear):
         raise TypeError("Expected packed ternary module")
     if not isinstance(original,nn.Linear) or x.ndim!=2:
         raise TypeError("Expected original nn.Linear and [tokens,features] inputs")
-    if len(x)<48 or x.shape[1]!=module.in_features:
+    if x.shape[-1] != module.in_features or len(x)<48:
         raise ValueError("At least 48 aligned calibration tokens required")
-    x=x.detach().float()
-    train_count=max(32,int(len(x)*(1-holdout_fraction)))
-    if train_count >= len(x):
-        train_count=len(x)-16
+    if not (0.0<holdout_fraction<0.5):
+        raise ValueError("holdout_fraction must be in (0,0.5)")
+    if output_chunk<1:
+        raise ValueError("output_chunk must be >= 1")
+
     old=module.group_scales.detach().clone()
-    o=module.out_features
-    g=module.groups
-    codes=unpack_ternary(module.packed_weight,module.kpad).reshape(o,g,128).float()
-    def make_features(part):
-        xpad=F.pad(part,(0,module.kpad-module.in_features))
-        xt=xpad.reshape(-1,g,128)
-        # [out, token, group], with a single output per G128 ternary dot.
-        return torch.einsum("tgi,ogi->otg",xt,codes)
-    bias=(original.bias.detach().float() if original.bias is not None else None)
-    targets=F.linear(x,original.weight.detach().float(),bias).transpose(0,1).contiguous()
-    if bias is not None:
-        targets=targets-bias[:,None]
-    f=make_features(x[:train_count])
-    y=targets[:,:train_count].unsqueeze(-1)
-    gram=torch.bmm(f.transpose(1,2),f)
-    rhs=torch.bmm(f.transpose(1,2),y)
-    base=old.float().unsqueeze(-1)
-    anchor=(gram.diagonal(dim1=-2,dim2=-1).mean(-1)
-            .clamp_min(1e-7)*float(relative_ridge))
-    eye=torch.eye(g,device=x.device,dtype=torch.float32).unsqueeze(0)
-    solution=torch.linalg.solve(gram+anchor[:,None,None]*eye,
-                                rhs+anchor[:,None,None]*base).squeeze(-1)
-    trial=solution.clamp(min=0.0)
-    # Avoid unstable magnitude explosions in barely-observed groups.
-    trial=torch.minimum(torch.maximum(trial,old.float()*0.35),
-                        old.float()*2.2).half()
-    fv=make_features(x[train_count:])
-    truth=targets[:,train_count:]
-    denom=truth.square().mean().clamp_min(1e-8)
-    pre=(torch.einsum("otg,og->ot",fv,old.float())-truth).square().mean()/denom
-    post=(torch.einsum("otg,og->ot",fv,trial.float())-truth).square().mean()/denom
-    passed=(torch.isfinite(post).item() and float(post)<=float(pre)-1e-6)
-    if passed:
-        module.group_scales.copy_(trial)
+    x=x.detach().to(device=original.weight.device,dtype=original.weight.dtype)
+    rows=module.out_features
+    groups=module.groups
+    train_count=max(32,min(len(x)-16,int(len(x)*(1-holdout_fraction))))
+    # Match the actual original FP16 projection; never allocate all per-output
+    # group activations simultaneously.
+    teacher=F.linear(x,original.weight,original.bias).detach().float()
+    if original.bias is not None:
+        teacher-=original.bias.detach().float()[None,:]
+    xp=F.pad(x.float(),(0,module.kpad-module.in_features)).reshape(-1,groups,128)
+    codes=unpack_ternary(module.packed_weight,module.kpad).reshape(
+        rows,groups,128)
+    trial_all=old.clone()
+    err_before=err_after=0.0
+    accepted_rows=0
+    failed_chunks=0
+    for start in range(0,rows,output_chunk):
+        stop=min(rows,start+output_chunk)
+        try:
+            # Use GPU only for feature extraction (no large CUDA linalg.solve).
+            z=torch.einsum(
+                "tgi,ogi->otg",xp,codes[start:stop].float()).cpu()
+            y=teacher[:,start:stop].transpose(0,1).contiguous().cpu()
+            prior=old[start:stop].float().cpu()
+            a=z[:,:train_count,:]
+            b=y[:,:train_count].unsqueeze(-1)
+            gram=torch.bmm(a.transpose(1,2),a)
+            rhs=torch.bmm(a.transpose(1,2),b)
+            anchor=(gram.diagonal(dim1=-2,dim2=-1).mean(-1)
+                    .clamp_min(1e-6)*max(float(relative_ridge),1e-6))
+            eye=torch.eye(groups,dtype=torch.float32).unsqueeze(0)
+            updated=torch.linalg.solve(
+                gram+anchor[:,None,None]*eye,
+                rhs+anchor[:,None,None]*prior.unsqueeze(-1)).squeeze(-1)
+            updated=updated.clamp_min(0.0)
+            updated=torch.minimum(torch.maximum(updated,prior*0.35),
+                                  prior*2.2).to(torch.float16).float()
+            val=z[:,train_count:,:]
+            truth=y[:,train_count:]
+            before=(torch.einsum("otg,og->ot",val,prior)-truth).square().mean(-1)
+            after=(torch.einsum("otg,og->ot",val,updated)-truth).square().mean(-1)
+            better=torch.isfinite(after)&(after<before-1e-8)
+            if bool(better.any()):
+                trial_all[start:stop][better.to(old.device)]=updated[better].to(
+                    device=old.device,dtype=old.dtype)
+            accepted_rows+=int(better.sum())
+            err_before+=float(before.sum())
+            err_after+=float(torch.where(better,after,before).sum())
+        except (RuntimeError,ValueError) as exc:
+            # Model exploration must be resilient: an unstable calibration
+            # chunk never poisons the packed weights.
+            failed_chunks+=1
+            print(f"Scale-fit chunk {start}:{stop} retained PTQ: {str(exc)[:180]}")
+    any_accepted=accepted_rows>0
+    if any_accepted:
+        module.group_scales.copy_(trial_all)
         module._dense_cache=None
-    return dict(baseline_nmse=float(pre),candidate_nmse=float(post),
-                accepted=bool(passed),group_count=g,token_count=len(x))
+    return {
+        "baseline_nmse":err_before/max(rows,1),
+        "candidate_nmse":err_after/max(rows,1),
+        "accepted":any_accepted,
+        "accepted_output_rows":accepted_rows,
+        "failed_chunks":failed_chunks,
+        "group_count":groups,
+        "token_count":len(x),
+        "calibration_solver":"cpu_chunked_ridge",
+    }
 
 
 @torch.no_grad()
