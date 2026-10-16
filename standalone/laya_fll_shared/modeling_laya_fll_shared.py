@@ -311,39 +311,53 @@ def load_model(model_dir,*,device="cpu",local_files_only=True,compile_head=False
 # residuals, RoPE, and layer-specific attention output are NOT shared.
 # ---------------------------------------------------------------------
 def local_pair_indices(model):
-    """Find FULL / sliding / sliding triples from the model's actual config.
+    """Verify FULL / same-window LOCAL / LOCAL triples in ModernBERT.
 
-    transformers==4.57.6 ModernBertAttention exposes .sliding_window
-    (None for full, integer for local), not .local_attention. Layer types
-    are defined in encoder.config.layer_types.
+    transformers==4.57.6 uses attn.local_attention: (-1,-1) means FULL,
+    (64,64) is a 128-token sliding window. Newer builds can expose
+    config.layer_types with attn.sliding_window instead. Support both.
     """
     layers=model.encoder.layers
+    cfg=model.encoder.config
     n=len(layers)
-    layer_types=getattr(model.encoder.config,"layer_types",None)
-    if layer_types is None or len(layer_types)!=n:
-        raise ValueError("Expected layer_types in ModernBERT encoder configuration")
-    result=[]
-    for anchor in range(0,n,3):
-        if layer_types[anchor]!="full_attention":
-            raise ValueError(f"Layer {anchor} is not full attention: {layer_types[anchor]}")
-        full=layers[anchor].attn
-        if getattr(full,"sliding_window",None) is not None:
-            raise ValueError(f"Full attention layer {anchor} unexpectedly has a local window")
-        pair=(anchor+1,anchor+2)
-        if pair[1]>=n:
-            continue
-        if (layer_types[pair[0]],layer_types[pair[1]])!=(
-                "sliding_attention","sliding_attention"):
-            raise ValueError(f"Layers {pair} must both use sliding attention")
-        left=layers[pair[0]].attn
-        right=layers[pair[1]].attn
-        w1=getattr(left,"sliding_window",None)
-        w2=getattr(right,"sliding_window",None)
-        if w1 is None or w1!=w2:
-            raise ValueError(f"Layers {pair} have unequal local windows: {w1} vs {w2}")
-        result.append(pair)
-    return result
+    layer_types=getattr(cfg,"layer_types",None)
+    if layer_types is not None and len(layer_types)!=n:
+        raise ValueError("ModernBERT layer_types count does not match layers")
 
+    def mode_at(i):
+        a=layers[i].attn
+        old_window=getattr(a,"local_attention",None)
+        if old_window is not None:
+            window=tuple(old_window)
+            if window==(-1,-1):
+                return ("full",None)
+            if len(window)!=2 or min(window)<0:
+                raise ValueError(f"Malformed local attention window at {i}: {window}")
+            return ("local",window)
+        typ=(layer_types[i] if layer_types is not None else
+             getattr(layers[i],"attention_type",None))
+        window=getattr(a,"sliding_window",None)
+        if typ=="full_attention" and window is None:
+            return ("full",None)
+        if typ=="sliding_attention" and window is not None:
+            return ("local",int(window))
+        raise ValueError(f"Unsupported ModernBERT attention metadata at layer {i}: {typ}, {window}")
+
+    pairs=[]
+    for anchor in range(0,n,3):
+        mode,_=mode_at(anchor)
+        if mode!="full":
+            raise ValueError(f"Layer {anchor} must be FULL attention")
+        left_idx,right_idx=anchor+1,anchor+2
+        if right_idx>=n:
+            continue
+        m1,w1=mode_at(left_idx)
+        m2,w2=mode_at(right_idx)
+        if m1!="local" or m2!="local" or w1!=w2:
+            raise ValueError(
+                f"Layers {(left_idx,right_idx)} must have identical local windows: {m1}/{w1}, {m2}/{w2}")
+        pairs.append((left_idx,right_idx))
+    return pairs
 
 def tie_paired_attention(model, *, initialization="first"):
     """Share only attention projection parameters within paired local layers.
