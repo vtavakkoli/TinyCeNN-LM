@@ -311,23 +311,36 @@ def load_model(model_dir,*,device="cpu",local_files_only=True,compile_head=False
 # residuals, RoPE, and layer-specific attention output are NOT shared.
 # ---------------------------------------------------------------------
 def local_pair_indices(model):
+    """Find FULL / sliding / sliding triples from the model's actual config.
+
+    transformers==4.57.6 ModernBertAttention exposes .sliding_window
+    (None for full, integer for local), not .local_attention. Layer types
+    are defined in encoder.config.layer_types.
+    """
     layers=model.encoder.layers
     n=len(layers)
+    layer_types=getattr(model.encoder.config,"layer_types",None)
+    if layer_types is None or len(layer_types)!=n:
+        raise ValueError("Expected layer_types in ModernBERT encoder configuration")
     result=[]
-    # ModernBERT is already global/local/local. Verify every selected pair.
     for anchor in range(0,n,3):
+        if layer_types[anchor]!="full_attention":
+            raise ValueError(f"Layer {anchor} is not full attention: {layer_types[anchor]}")
+        full=layers[anchor].attn
+        if getattr(full,"sliding_window",None) is not None:
+            raise ValueError(f"Full attention layer {anchor} unexpectedly has a local window")
         pair=(anchor+1,anchor+2)
         if pair[1]>=n:
             continue
-        full=layers[anchor].attn
+        if (layer_types[pair[0]],layer_types[pair[1]])!=(
+                "sliding_attention","sliding_attention"):
+            raise ValueError(f"Layers {pair} must both use sliding attention")
         left=layers[pair[0]].attn
         right=layers[pair[1]].attn
-        assert full.local_attention==(-1,-1),(
-            f"Layer {anchor} must be full attention")
-        assert left.local_attention==right.local_attention,(
-            f"Local layers {pair} must use same attention window")
-        assert left.local_attention!=(-1,-1),(
-            f"Local layers {pair} must not be full attention")
+        w1=getattr(left,"sliding_window",None)
+        w2=getattr(right,"sliding_window",None)
+        if w1 is None or w1!=w2:
+            raise ValueError(f"Layers {pair} have unequal local windows: {w1} vs {w2}")
         result.append(pair)
     return result
 
