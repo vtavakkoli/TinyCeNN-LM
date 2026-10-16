@@ -1,0 +1,271 @@
+{
+  "model_id": "vtava/Laya-1.2-speedup-standalone-fp16",
+  "model_revision": "2891f7312d8e7c65b43a6e04c29cc226b06b4fac",
+  "source_hashes": {
+    "benchmark_laya_fp16.py": "fca3965e91244cf7557d94ca081e7875c2867d3468c573f47bba82d98c668882",
+    "fast_inference.py": "e1720d11b635b68d51af563bbecda37afca7932b1d2b285594c2d5148e11cd47",
+    "modeling_laya_standalone.py": "6883d5ce3d9024a8689515d1e50d6d7ce3abcb356fad903bf1e997954b84bab4"
+  },
+  "code_revision": "850f362ed1567cc35545fb11c46bc34ca3669e7b",
+  "torch": "2.14.1+cpu",
+  "transformers": "4.57.6",
+  "python": "3.12.14",
+  "device": "cpu",
+  "cuda": null,
+  "hardware": "x86_64",
+  "cpu_threads": 2,
+  "load_seconds": 16.99995190599998,
+  "max_probability_drift": 0.01,
+  "limitations": "Synthetic decision parity, not held-out accuracy. GPU speed requires GPU measurements. Winners apply only to tested shapes/hardware, excluding compilation/capture/startup.",
+  "skipped": [],
+  "results": [
+    {
+      "batch_size": 1,
+      "sequence_length": 128,
+      "candidate": "original_fp16",
+      "setup_and_validation_seconds": 7.416661635999958,
+      "audits": [
+        {
+          "passed": true,
+          "identical_decisions": true,
+          "max_probability_drift": 0.0,
+          "max_valid_logit_drift": 0.0
+        },
+        {
+          "passed": true,
+          "identical_decisions": true,
+          "max_probability_drift": 0.0,
+          "max_valid_logit_drift": 0.0
+        },
+        {
+          "passed": true,
+          "identical_decisions": true,
+          "max_probability_drift": 0.0,
+          "max_valid_logit_drift": 0.0
+        }
+      ],
+      "passed": true,
+      "median_ms": 2483.108518999984,
+      "round_ms": [
+        2483.108518999984,
+        2315.4509459999986,
+        2550.1444470000365
+      ],
+      "speedup_vs_original": 1.0
+    },
+    {
+      "batch_size": 1,
+      "sequence_length": 128,
+      "candidate": "device_masks_gather",
+      "setup_and_validation_seconds": 8.219624511000006,
+      "audits": [
+        {
+          "passed": true,
+          "identical_decisions": true,
+          "max_probability_drift": 0.0,
+          "max_valid_logit_drift": 0.0
+        },
+        {
+          "passed": true,
+          "identical_decisions": true,
+          "max_probability_drift": 0.0,
+          "max_valid_logit_drift": 0.0
+        },
+        {
+          "passed": true,
+          "identical_decisions": true,
+          "max_probability_drift": 0.0,
+          "max_valid_logit_drift": 0.0
+        }
+      ],
+      "passed": true,
+      "median_ms": 2364.671352000016,
+      "round_ms": [
+        2283.655672000009,
+        2364.671352000016,
+        2544.5093120000024
+      ],
+      "speedup_vs_original": 1.0500861005060151
+    },
+    {
+      "batch_size": 1,
+      "sequence_length": 128,
+      "candidate": "marker_sdpa",
+      "setup_and_validation_seconds": 7.301641612000026,
+      "audits": [
+        {
+          "passed": true,
+          "identical_decisions": true,
+          "max_probability_drift": 0.0,
+          "max_valid_logit_drift": 0.0
+        },
+        {
+          "passed": true,
+          "identical_decisions": true,
+          "max_probability_drift": 0.0,
+          "max_valid_logit_drift": 0.0
+        },
+        {
+          "passed": true,
+          "identical_decisions": true,
+          "max_probability_drift": 0.0,
+          "max_valid_logit_drift": 0.0
+        }
+      ],
+      "passed": true,
+      "median_ms": 2446.257094000032,
+      "round_ms": [
+        2379.105296999967,
+        2446.257094000032,
+        2555.315546000031
+      ],
+      "speedup_vs_original": 1.0150644121136483
+    },
+    {
+      "batch_size": 1,
+      "sequence_length": 512,
+      "candidate": "original_fp16",
+      "setup_and_validation_seconds": 31.015194800000017,
+      "audits": [
+        {
+          "passed": true,
+          "identical_decisions": true,
+          "max_probability_drift": 0.0,
+          "max_valid_logit_drift": 0.0
+        },
+        {
+          "passed": true,
+          "identical_decisions": true,
+          "max_probability_drift": 0.0,
+          "max_valid_logit_drift": 0.0
+        },
+        {
+          "passed": true,
+          "identical_decisions": true,
+          "max_probability_drift": 0.0,
+          "max_valid_logit_drift": 0.0
+        }
+      ],
+      "passed": true,
+      "median_ms": 9387.573638999982,
+      "round_ms": [
+        9342.113907999988,
+        9387.573638999982,
+        10637.683779999974
+      ],
+      "speedup_vs_original": 1.0
+    },
+    {
+      "batch_size": 1,
+      "sequence_length": 512,
+      "candidate": "device_masks_gather",
+      "setup_and_validation_seconds": 29.051909274000025,
+      "audits": [
+        {
+          "passed": true,
+          "identical_decisions": true,
+          "max_probability_drift": 0.0,
+          "max_valid_logit_drift": 0.0
+        },
+        {
+          "passed": true,
+          "identical_decisions": true,
+          "max_probability_drift": 0.0,
+          "max_valid_logit_drift": 0.0
+        },
+        {
+          "passed": true,
+          "identical_decisions": true,
+          "max_probability_drift": 0.0,
+          "max_valid_logit_drift": 0.0
+        }
+      ],
+      "passed": true,
+      "median_ms": 10106.176921000042,
+      "round_ms": [
+        9396.419873000013,
+        10248.498650999976,
+        10106.176921000042
+      ],
+      "speedup_vs_original": 0.9288946465495924
+    },
+    {
+      "batch_size": 1,
+      "sequence_length": 512,
+      "candidate": "marker_sdpa",
+      "setup_and_validation_seconds": 30.19823841699997,
+      "audits": [
+        {
+          "passed": true,
+          "identical_decisions": true,
+          "max_probability_drift": 0.0,
+          "max_valid_logit_drift": 0.0
+        },
+        {
+          "passed": true,
+          "identical_decisions": true,
+          "max_probability_drift": 0.00011846423149108887,
+          "max_valid_logit_drift": 0.00048828125
+        },
+        {
+          "passed": true,
+          "identical_decisions": true,
+          "max_probability_drift": 0.0,
+          "max_valid_logit_drift": 0.0
+        }
+      ],
+      "passed": true,
+      "median_ms": 9279.864757999916,
+      "round_ms": [
+        9244.802675000074,
+        9394.688905999941,
+        9279.864757999916
+      ],
+      "speedup_vs_original": 1.0116067296031672
+    }
+  ],
+  "winners": [
+    {
+      "batch_size": 1,
+      "sequence_length": 128,
+      "candidate": "device_masks_gather",
+      "median_ms": 2364.671352000016,
+      "speedup_vs_original": 1.0500861005060151
+    },
+    {
+      "batch_size": 1,
+      "sequence_length": 512,
+      "candidate": "marker_sdpa",
+      "median_ms": 9279.864757999916,
+      "speedup_vs_original": 1.0116067296031672
+    }
+  ],
+  "end_to_end": {
+    "identical_decisions": true,
+    "max_probability_drift": 1.2524425983428955e-05,
+    "original_predict": {
+      "median_ms": 1549.238700999922,
+      "round_ms": [
+        1640.4703880000397,
+        1526.66866200002,
+        1549.238700999922
+      ]
+    },
+    "prepared_marker_predict": {
+      "median_ms": 1661.100819000012,
+      "round_ms": [
+        1786.8618749999996,
+        1661.100819000012,
+        1539.8810649999177
+      ]
+    }
+  },
+  "tested_implementation_commit": "9ecca2154beb503d5c34cdd75723a2e11a185c89",
+  "provenance_note": "Local model directory was downloaded from the pinned Hugging Face resolve URLs; implementation files match tested_implementation_commit. Original code_revision records checkout HEAD before API publication.",
+  "local_test_summary": {
+    "passed": 19,
+    "skipped": 1,
+    "skip_reason": "CUDA unavailable"
+  },
+  "command": "python scripts/benchmark_laya_fp16.py --model-dir hf_laya --device cpu --lengths 128 512 --batch-sizes 1 --warmup 1 --repeats 1 --rounds 3"
+}
