@@ -429,15 +429,14 @@ def projection_slots(model):
 
 
 def _validate_slot(model, first, second, component):
-    key=(int(first),int(second),str(component))
-    if key not in projection_slots(model):
-        # During an incremental selection some slots may already have become
-        # SVDDeltaLinear objects. Check the source's layer schedule instead.
-        if (int(first),int(second)) not in local_pair_indices(model):
-            raise ValueError(f"Unknown local pair: {key}")
-        if component not in ("Wqkv","Wo"):
-            raise ValueError(f"Unknown projection: {key}")
-    return key
+    """Validate schedule independently of other already-compressed slots."""
+    first,second=int(first),int(second)
+    component=str(component)
+    if (first,second) not in local_pair_indices(model):
+        raise ValueError(f"Unknown local pair: {(first,second)}")
+    if component not in ("Wqkv","Wo"):
+        raise ValueError(f"Unknown projection: {component}")
+    return first,second,component
 
 
 def svd_factors(model, first, second, component, max_rank=256,
