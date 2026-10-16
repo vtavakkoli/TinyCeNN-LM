@@ -10,6 +10,8 @@ Explore CeNN, integrated memory, delta-memory and compact feed-forward replaceme
 
 **Laya FP16 inference optimization:** [GPU benchmark notebook](notebooks/Laya_FP16_Fast_Inference_Colab.ipynb) · [Implementation and validation](docs/LAYA_FP16_FAST_INFERENCE.md). Uses the existing standalone FP16 weights; GPU speedup must be measured on your hardware.
 
+**Laya FP16 V2:** [Compiled control and end-to-end API notebook](notebooks/Laya_FP16_Compiled_Control_API_V2_Colab.ipynb) · [Benchmark protocol](docs/LAYA_FP16_BENCHMARK_V2.md).
+
 ## Choose a starting point
 
 | Goal | Track | Notebook |
