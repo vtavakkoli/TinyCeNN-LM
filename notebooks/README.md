@@ -140,3 +140,10 @@ The core labels carry forward the existing model-status guide; this reorganizati
 | Notebook | Run |
 |---|---|
 | [TinyCeNN MoE Top2](TinyCeNN_MoE_Top2_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/TinyCeNN_MoE_Top2_Colab.ipynb) |
+
+
+## Laya FP16 V3: all-28-layer brute-force search
+
+[Open V3 in Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/codex/laya-fp16-fast-inference/notebooks/Laya_FP16_All28_BruteForce_V3_Colab.ipynb) · [Method and V2 findings](../docs/LAYA_FP16_LAYER_SEARCH_V3.md)
+
+Search attention/FFN/block bypasses and activation-ranked FFN channel pruning at every layer, then bounded combinations. Includes labelled case-disjoint validation, compiled speed controls, complete API timing, a final official-test audit and a reconstructable recipe. GPU results are required before claiming further improvement.
