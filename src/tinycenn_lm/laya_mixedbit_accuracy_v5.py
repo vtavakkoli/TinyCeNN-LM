@@ -7,7 +7,12 @@ from __future__ import annotations
 import torch
 from torch import nn
 from torch.nn import functional as F
-from laya_mixedbit_sparse_v4 import PackedMixedLinear, PackedSparseLinear
+try:
+    # Normal installed package import (CI/tests/library users).
+    from .laya_mixedbit_sparse_v4 import PackedMixedLinear, PackedSparseLinear
+except ImportError:
+    # Standalone Colab downloads both pinned source files to /content.
+    from laya_mixedbit_sparse_v4 import PackedMixedLinear, PackedSparseLinear
 
 @torch.no_grad()
 def capture_input_moments(model, names, batches, stride=8, max_batches=12):
