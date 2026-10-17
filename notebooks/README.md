@@ -1,6 +1,6 @@
 # Notebook catalog
 
-All **111 notebooks** live under this directory: **81 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
+All **112 notebooks** live under this directory: **82 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
 
 [Project overview](../README.md) · [Model status](../MODEL_STATUS.md) · [Archived notebooks](archive/README.md) · [Path migration](../docs/NOTEBOOK_MIGRATION.md)
 
@@ -81,6 +81,7 @@ The core labels carry forward the existing model-status guide; this reorganizati
 | [Qwen3.5 0.8B CeNN-DeltaCell V3 Cellular Memory (experimental)](Qwen35_08B_CeNN_DeltaCell_V3_Cellular_Memory_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNN_DeltaCell_V3_Cellular_Memory_Colab.ipynb) |
 | [Qwen3.5 0.8B CeNN-MemoryGraph V4 (experimental)](Qwen35_08B_CeNN_MemoryGraph_V4_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNN_MemoryGraph_V4_Colab.ipynb) |
 | [Qwen3.5 0.8B CeNN V5 Head Rescue (experimental)](Qwen35_08B_CeNN_HeadRescue_V5_Quality_First_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNN_HeadRescue_V5_Quality_First_Colab.ipynb) |
+| [Qwen3.5 0.8B CeNN V5.1 Checkpoint-Guided Head Rescue (experimental)](Qwen35_08B_CeNN_HeadRescue_V51_Warmstart_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNN_HeadRescue_V51_Warmstart_Colab.ipynb) |
 | [Qwen35 08B FlyCore from v3 Standalone](Qwen35_08B_FlyCore_from_v3_Standalone_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_FlyCore_from_v3_Standalone_Colab.ipynb) |
 | [Qwen35 08B FlyCore v2 from v3](Qwen35_08B_FlyCore_v2_from_v3_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_FlyCore_v2_from_v3_Colab.ipynb) |
 | [Qwen35 08B FlyEmbedding v31 Preservation First](Qwen35_08B_FlyEmbedding_v31_Preservation_First_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_FlyEmbedding_v31_Preservation_First_Colab.ipynb) |
