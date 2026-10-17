@@ -680,7 +680,7 @@ def replace_projection(model, spec, *, factors=None, initialized=True):
                 A,B,_=svd_factors(model,leader,idx,comp,max_rank=rank)
             else:
                 A,B=factors
-            replacement=SVDDeltaLinear(shared,rank,A[:,:rank],B[:rank,:])
+            replacement=SVDDeltaLinear(shared,rank,A=A[:,:rank],B=B[:rank,:])
         else:
             replacement=SVDDeltaLinear(shared,rank)
     else:
