@@ -32,3 +32,38 @@ def test_padding_is_ignored():
     valid=torch.tensor([[1,1,1,1,0]])
     result=causal_window_anchor(q,k,v,valid,window=5,anchors=1,chunk_size=2)
     assert torch.all(result[:,:,:4]<10)
+
+
+def test_tiny_qwen_all24_full_forward_cpu():
+    # No 1.75 GB model download required: initialize a tiny 24-block
+    # Qwen3.5 text backbone, install all replacements, run causal logits.
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
+    from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
+    from tinycenn_lm.qwen35_window_anchor import (
+        install_all24, WindowAnchorDelta, WindowAnchorFull)
+    cfg=Qwen3_5TextConfig(
+        vocab_size=128,hidden_size=64,intermediate_size=128,
+        num_hidden_layers=24,num_attention_heads=2,num_key_value_heads=1,
+        head_dim=32,linear_num_key_heads=2,linear_num_value_heads=2,
+        linear_key_head_dim=32,linear_value_head_dim=32,
+        linear_conv_kernel_dim=4,
+        layer_types=["full_attention" if i%4==3 else "linear_attention"
+                     for i in range(24)],
+        rope_parameters={"rope_type":"default","rope_theta":10000.0,
+                         "partial_rotary_factor":0.25,
+                         "mrope_interleaved":True,
+                         "mrope_section":[2,1,1]},
+        use_cache=False)
+    torch.manual_seed(4)
+    model=Qwen3_5ForCausalLM(cfg).eval()
+    counts=install_all24(model,window=8,anchors=2,chunk_size=4)
+    assert counts=={"delta_replaced":18,"full_replaced":6}
+    assert sum(isinstance(l.linear_attn,WindowAnchorDelta)
+               for l in model.model.layers if l.block_type=="linear_attention")==18
+    assert sum(isinstance(l.self_attn,WindowAnchorFull)
+               for l in model.model.layers if l.block_type=="full_attention")==6
+    with torch.inference_mode():
+        x=torch.tensor([[4,5,6,7,8,9,10,11]],dtype=torch.long)
+        logits=model(input_ids=x,use_cache=False,logits_to_keep=1).logits
+    assert logits.shape==(1,1,128)
+    assert torch.isfinite(logits).all()
