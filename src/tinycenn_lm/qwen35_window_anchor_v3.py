@@ -201,7 +201,7 @@ class WindowAnchorFull(nn.Module):
 
 
 def causal_window_anchor_biased(q, k, v, attention_mask, window, anchors,
-                                chunk_size, scale, decay):
+                                chunk_size, scale, decay, dense_threshold=512):
     """Per-head trained L2-cosine softmax with exponential recency bias.
 
     Bias is additive in log-attention space, so it remains a *causal*
@@ -221,7 +221,7 @@ def causal_window_anchor_biased(q, k, v, attention_mask, window, anchors,
     # chunking for longer sequences where the T×T mask is too expensive.
     # This path preserves the same causal window + prefix anchors + recency
     # logits and supports gradients through learned per-head bias.
-    if T<=512:
+    if T<=dense_threshold:
         idx=torch.arange(T,device=q.device)
         distance=idx[:,None]-idx[None,:]
         allowed=(distance>=0)&(
