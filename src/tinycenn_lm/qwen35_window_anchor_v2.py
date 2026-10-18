@@ -272,8 +272,8 @@ class WindowAnchorDeltaV2(WindowAnchorDelta):
         # An inexpensive, nonrecurrent learned direct-value route
         # enriches the attention mix; no DeltaNet temporal state exists.
         beta=self.in_proj_b(hidden_states).sigmoid().transpose(1,2)[:,:,:,None]
-        blend=torch.sigmoid(self.direct_mix_logit)[None,:,None,None]*(1-beta)
-        a=a*(1-blend)+v*blend
+        blend=torch.sigmoid(self.direct_mix_logit).to(v.dtype)[None,:,None,None]*(1-beta)
+        a=(a*(1-blend)+v*blend).to(v.dtype)
         a=a.transpose(1,2).reshape(-1,self.head_v_dim)
         z=self.in_proj_z(hidden_states).reshape(-1,self.head_v_dim)
         return self.out_proj(self.norm(a,z).reshape(B,T,self.value_dim))
