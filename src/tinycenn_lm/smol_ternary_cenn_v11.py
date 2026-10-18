@@ -46,7 +46,20 @@ class TernaryQATLinear(nn.Module):
             raise ValueError("Invalid low rank")
         self.rank=int(rank)
         codes,scales=ternarize_g128(linear.weight.detach())
-        self.codes=nn.Parameter(codes.float().contiguous())
+        # Initial *rounded* codes match V9 exactly, while FP32 latent
+        # positions reflect original weight / group scale. Without this,
+        # starting all latents at integers (-1/0/+1) and taking 12 small
+        # optimizer steps may never cross a 0.5 rounding boundary.
+        padded_weight=F.pad(linear.weight.detach().float(),
+                            (0,self.padded-self.in_features))
+        ratio=(padded_weight.reshape(self.out_features,self.groups,GROUP) /
+               scales.float().unsqueeze(-1).clamp_min(1e-8))
+        ratio=ratio.reshape(self.out_features,self.padded)
+        zero_latent=ratio.clamp(-0.49,0.49)
+        nonzero_latent=codes.float()*ratio.abs().clamp(0.51,1.20)
+        latent=torch.where(codes==0,zero_latent,nonzero_latent)
+        assert torch.equal(latent.round().clamp(-1,1).to(torch.int8),codes)
+        self.codes=nn.Parameter(latent.contiguous())
         self.log_scales=nn.Parameter(
             scales.float().clamp_min(1e-8).log().contiguous())
         self.register_buffer("bias",linear.bias.detach().half().clone()
