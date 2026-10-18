@@ -40,6 +40,12 @@ def test_cenn_only_is_causal_and_ternary():
         original=cell(x)
         perturbed=cell(shifted)
     torch.testing.assert_close(original[:,:7,:],perturbed[:,:7,:])
+    # It must be a genuine temporal stencil, not an accidental identity
+    # formed by cancellation among {-1,0,+1} branches.
+    xconst=torch.ones(1,5,64)
+    yconst=cell(xconst)
+    assert not torch.allclose(yconst[:,1:,:],xconst[:,1:,:])
+
 
 
 def test_ternary_selection_rejects_new_teacher_mistakes():
