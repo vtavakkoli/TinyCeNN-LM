@@ -82,7 +82,7 @@ if HAS_TRITON:
         nib=q & 15
         grouped=tl.reshape(nib,(BK//8,8))
         shifts=tl.arange(0,8)*4
-        words=tl.sum(tl.shift_left(grouped,shifts[None,:]),1)
+        words=tl.sum(grouped << shifts[None,:],1)
         kp=tl.arange(0,BK//8)
         tl.store(AP+row*(K//8)+kp,words,mask=kp<(K//8))
         tl.store(AS+row,scale)
