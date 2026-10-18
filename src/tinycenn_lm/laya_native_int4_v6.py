@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import statistics
+import importlib.util
 from typing import Any
 
 import torch
@@ -18,12 +19,20 @@ from torch import nn
 
 
 def backend_configs(group_size: int = 128,
-                    include_gemlite: bool = True) -> dict[str, Any]:
+                    include_gemlite: bool = True,
+                    allow_turing_experimental: bool = False) -> dict[str, Any]:
     """Return only APIs actually exposed by the installed TorchAO build."""
     if group_size not in (32, 64, 128, 256):
         raise ValueError("TorchAO supported group sizes: 32,64,128,256")
     from torchao.quantization import Int4WeightOnlyConfig
 
+    # CUDA SM75 (Tesla T4) lacks native BF16. TorchAO's tiled weight-only
+    # INT4 uses BF16 activations. MSLK 1.0 does not include SM75 builds.
+    # Silently offering these doomed backends wasted V6's T4 sweep.
+    if torch.cuda.is_available():
+        major,minor=torch.cuda.get_device_capability()
+        if major<8 and not allow_turing_experimental:
+            return {}
     configs: dict[str, Any] = {}
     for name, packing, chooser in (
         ("torchao_tiled_hqq", "tile_packed_to_4d", "hqq"),
@@ -47,7 +56,7 @@ def backend_configs(group_size: int = 128,
         try:
             import gemlite  # noqa: F401
             try:
-                from torchao.prototype import UIntxWeightOnlyConfig
+                from torchao.prototype.quantization import UIntxWeightOnlyConfig
                 config = UIntxWeightOnlyConfig(
                     group_size=group_size, bit_width=4, packing_bitwidth=32)
             except (ImportError, TypeError, ValueError, AttributeError):
@@ -211,3 +220,75 @@ def swap_module(model: nn.Module, name: str, replacement: nn.Module) -> nn.Modul
     old=getattr(owner,field)
     setattr(owner,field,replacement)
     return old
+
+
+def platform_diagnostics(allow_turing_experimental=False) -> dict[str, Any]:
+    """Explain native INT4 capability BEFORE costly quantization trials."""
+    if not torch.cuda.is_available():
+        return {"supported":False,"reason":"CUDA GPU missing",
+                "recommendation":"Select NVIDIA A100/H100 GPU"}
+    major,minor=torch.cuda.get_device_capability()
+    name=torch.cuda.get_device_name()
+    sm=f"{major}.{minor}"
+    can_bf16=bool(torch.cuda.is_bf16_supported())
+    if major<8:
+        return {
+            "supported":bool(allow_turing_experimental),
+            "gpu":name,"sm":sm,"bf16":can_bf16,
+            "reason":(
+                "Turing/SM75 has no BF16 support; TorchAO tiled INT4 "
+                "requires BF16 activation. Stable MSLK 1.0 excludes SM75. "
+                "Its hardware INT4 tensor cores use INT4 activations AND INT4 weights."
+            ),
+            "recommendation":(
+                "Use A100/H100 for TorchAO weight-only INT4. "
+                "T4 native INT4 needs a separate activation-quantized "
+                "INT4xINT4 CUTLASS implementation with accuracy validation."
+            ),
+        }
+    return {
+        "supported":True,"gpu":name,"sm":sm,"bf16":can_bf16,
+        "reason":"SM80+ supports BF16; actual packed INT4 kernels still need probing.",
+        "recommendation":"Benchmark A100/H100 first; use L4 as experimental."
+    }
+
+
+@torch.inference_mode()
+def paired_cuda_latency(a_fn,b_fn, *, repeats=16, warmup=10):
+    """Interleaved ABBA timing limits thermal/clock/order bias.
+
+    The V6 T4 run measured 1.135x on one shape with *identical* FP16 models.
+    Paired iterations and a separate no-quantization classification prevent
+    falsely reporting benchmark jitter as INT4 speedup.
+    """
+    if repeats<3:raise ValueError("Need >=3 paired measurements")
+    for _ in range(warmup):
+        a_fn();b_fn()
+    torch.cuda.synchronize()
+    a_times,b_times=[],[]
+    def one(fn):
+        start=torch.cuda.Event(enable_timing=True)
+        end=torch.cuda.Event(enable_timing=True)
+        start.record()
+        fn()
+        end.record()
+        end.synchronize()
+        return float(start.elapsed_time(end))
+    for i in range(repeats):
+        # Alternating ABBA ordering (two calls per candidate per iteration).
+        if i%2==0:
+            a1=one(a_fn);b1=one(b_fn);b2=one(b_fn);a2=one(a_fn)
+        else:
+            b1=one(b_fn);a1=one(a_fn);a2=one(a_fn);b2=one(b_fn)
+        a_times.append((a1+a2)/2)
+        b_times.append((b1+b2)/2)
+    ratios=[a/b for a,b in zip(a_times,b_times) if b>0]
+    return {
+        "fp16_median_ms":float(statistics.median(a_times)),
+        "candidate_median_ms":float(statistics.median(b_times)),
+        "paired_speedup_median":float(statistics.median(ratios)),
+        "paired_speedup_p10":float(sorted(ratios)[
+            max(0,int((len(ratios)-1)*0.10))]),
+        "ratio_spread":float(max(ratios)-min(ratios)),
+        "repeats":len(ratios),
+    }
