@@ -2,6 +2,7 @@
 import pytest
 torch=pytest.importorskip("torch")
 pytest.importorskip("transformers")
+pytest.importorskip("transformers.models.qwen3_5.modeling_qwen3_5")
 from torch import nn
 from tinycenn_lm.qwen35_window_anchor_v2 import (
     causal_window_anchor_biased, WindowAnchorDeltaV2,
