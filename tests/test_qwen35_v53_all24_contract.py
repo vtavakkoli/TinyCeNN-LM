@@ -70,7 +70,10 @@ def test_native_delta_recurrence_is_substituted():
     assert 'parity_diagnostics.json' in code()
 
 
-def test_quality_requires_real_speed():
+def test_quality_requires_real_speed_and_gold_tokens():
     s=code()
+    # V5.3's acceptance decision uses reference NLL and gold-token accuracy,
+    # not agreement with potentially incorrect teacher top-1 predictions.
     assert "FINAL_TIMING['speedup']>MIN_SPEEDUP" in s
-    assert "STUDENT_AUDIT['teacher_agreement']>=MIN_AGREEMENT" in s
+    assert "audit_delta<=MAX_DELTA_NLL" in s
+    assert "audit_gold_accuracy_drop<=MAX_GOLD_ACCURACY_DROP" in s
