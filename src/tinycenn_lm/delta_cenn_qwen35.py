@@ -119,13 +119,20 @@ class Qwen35DeltaCeNNLinear(nn.Module):
     """
 
     def __init__(self,original:nn.Module,feature_dim:int|None=None,
-                 cells:bool=True,cell_interval:int=16):
+                 cells:bool=True,cell_interval:int=16,
+                 native_backend_oracle:bool=False):
         super().__init__()
         self.original=original
         self.core=DeltaCeNNRule(original.num_v_heads,original.head_k_dim,
             original.head_v_dim,feature_dim,cells,cell_interval)
         self.layer_idx=original.layer_idx
         self.layer_type=original.layer_type
+        # Diagnostics ONLY. Never enable this on a trained Delta-CeNN candidate:
+        # it calls Qwen's original chunk kernel to isolate adapter wiring from
+        # token-vs-chunk accumulation differences in the custom recurrence.
+        self.native_backend_oracle=bool(native_backend_oracle)
+        if self.native_backend_oracle and (cells or self.core.feature_dim != self.core.key_dim):
+            raise ValueError('Native-backend oracle requires full-rank, cells=False')
         if original.num_v_heads % original.num_k_heads:
             raise ValueError('Original Qwen value heads must group evenly over key heads')
 
@@ -161,7 +168,19 @@ class Qwen35DeltaCeNNLinear(nn.Module):
         a=o.in_proj_a(hidden_states)
         beta=o.in_proj_b(hidden_states).sigmoid()
         g=-o.A_log.float().exp()[None,None,:]*F.softplus(a.float()+o.dt_bias)
-        y=self.core(q,k,v,g,beta).to(hidden_states.dtype)
+        if self.native_backend_oracle:
+            # This is an explicit integration diagnostic, NOT a Delta-CeNN
+            # architecture or speed result. It uses precisely the same public
+            # Qwen backend as the original no-cache module on this runtime.
+            from transformers.models.qwen3_5.modeling_qwen3_5 import torch_chunk_gated_delta_rule
+            y,_=torch_chunk_gated_delta_rule(
+                q,k,v,g=g,beta=beta,output_final_state=False,
+                use_qk_l2norm_in_kernel=True)
+        else:
+            # Every evaluated/trainable Delta-CeNN candidate uses OUR cellular
+            # recurrence; it never falls back to Qwen's native delta kernel.
+            y=self.core(q,k,v,g,beta)
+        y=y.to(hidden_states.dtype)
         z=o.in_proj_z(hidden_states).reshape(batch,t,o.num_v_heads,o.head_v_dim)
         y=o.norm(y.reshape(-1,o.head_v_dim),z.reshape(-1,o.head_v_dim))
         return o.out_proj(y.reshape(batch,t,o.value_dim))
