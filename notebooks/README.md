@@ -23,6 +23,17 @@ WaveFlux is a standalone traveling-cell recurrent layer with exact parallel-scan
 | [WaveFlux-CeNN Standalone Reference](WaveFlux_CeNN_Standalone_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/WaveFlux_CeNN_Standalone_Colab.ipynb) |
 | [WaveFlux × SmolLM2-360M-Instruct Layer-0 Pure Cellular Replacement](WaveFlux_SmolLM2_360M_Layer0_Standalone_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/WaveFlux_SmolLM2_360M_Layer0_Standalone_Colab.ipynb) |
 
+## Standalone cellular competition — theoretical feasibility (experimental)
+
+Do **not** retrain another SmolLM2-360M replacement before checking the original layer-0 attention concentration and top-k oracle error. [Theory, failed WaveFlux reference, and CPU convergence experiments](../docs/COMPETITIVE_CENN_FEASIBILITY.md). The competitor uses only cellular local routing, but content-selective retrieval is functionally attention-like and no GPU advantage has been demonstrated.
+
+| Notebook | Run |
+|---|---|
+| [Competitive CeNN Attention Feasibility](CeNN_Competitive_Attention_Feasibility_Colab.ipynb) | [Colab (research branch)](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/research/competitive-cenn-feasibility/notebooks/CeNN_Competitive_Attention_Feasibility_Colab.ipynb) |
+
+| [CCM-v2 train new / resume checkpoint / real fast evaluation](CCM_v2_Smol360_RealFastEval_Only_Colab.ipynb) | [Colab (research branch)](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/research/competitive-cenn-feasibility/notebooks/CCM_v2_Smol360_RealFastEval_Only_Colab.ipynb) |
+| [CCM-v2 Multi-cell Consensus × SmolLM2-360M-Instruct Layer-0 and Chat Evaluation](CCM_v2_SmolLM2_360M_Consensus_Chat_Colab.ipynb) | [Colab (research branch)](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/research/competitive-cenn-feasibility/notebooks/CCM_v2_SmolLM2_360M_Consensus_Chat_Colab.ipynb) |\n\n| [CCM-v3 position-aware, native-pretrained parity-first SmolLM2 360M + chat](CCM_v3_Smol360_RoPE_Parity_Chat_Colab.ipynb) | [Colab (research branch)](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/research/competitive-cenn-feasibility/notebooks/CCM_v3_Smol360_RoPE_Parity_Chat_Colab.ipynb) |
+
 ## Core references
 
 | Notebook | Run |
