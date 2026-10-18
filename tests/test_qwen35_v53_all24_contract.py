@@ -65,7 +65,9 @@ def test_native_delta_recurrence_is_substituted():
     s=inspect.getsource(Qwen35DeltaCeNNLinear.forward)
     assert 'self.core(q,k,v,g,beta)' in s
     assert 'original(hidden_states' not in s
-    assert 'torch_chunk_gated_delta_rule' not in s
+    assert 'if self.native_backend_oracle:' in s
+    assert 'native_backend_oracle=True' in code()
+    assert 'parity_diagnostics.json' in code()
 
 
 def test_quality_requires_real_speed():
