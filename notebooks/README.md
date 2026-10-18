@@ -1,6 +1,6 @@
 # Notebook catalog
 
-All **120 notebooks** live under this directory: **90 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
+All **121 notebooks** live under this directory: **91 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
 
 [Project overview](../README.md) · [Model status](../MODEL_STATUS.md) · [Archived notebooks](archive/README.md) · [Path migration](../docs/NOTEBOOK_MIGRATION.md)
 
@@ -95,6 +95,7 @@ WaveFlux is a standalone traveling-cell recurrent layer with exact parallel-scan
 
 | Notebook | Run |
 |---|---|
+| [Qwen3.5 0.8B Delta-CeNN V5.6 — Four-Way Native/Delta18/Hybrid/Forced24 Comparison](Qwen35_08B_DeltaCeNN_V56_FourWay_QualityGated_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_DeltaCeNN_V56_FourWay_QualityGated_Colab.ipynb) |
 | [Qwen3.5 0.8B Delta-CeNN V5.5 — Chunk-Cell Optimization, Quality Gates and Fast Evaluation](Qwen35_08B_DeltaCeNN_V55_ChunkCell_Optimized_FastEval_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_DeltaCeNN_V55_ChunkCell_Optimized_FastEval_Colab.ipynb) |
 | [Qwen3.5 0.8B Delta-CeNN V5.4 All 24 — Quality-Gated Fast Evaluation and HF Research Export](Qwen35_08B_DeltaCeNN_V54_All24_QualityGated_FastEval_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_DeltaCeNN_V54_All24_QualityGated_FastEval_Colab.ipynb) |
 | [Qwen3.5 0.8B Delta-CeNN + V5.3 All 24 Progressive (experimental)](Qwen35_08B_DeltaCeNN_V53_All24_Progressive_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_DeltaCeNN_V53_All24_Progressive_Colab.ipynb) |
