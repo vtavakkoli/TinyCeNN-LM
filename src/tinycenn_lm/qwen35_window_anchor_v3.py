@@ -171,9 +171,26 @@ class WindowAnchorFull(nn.Module):
         # For window>=context, this IS ordinary full causal GQA. A single
         # optimized causal SDPA kernel preserves the teacher full attention
         # and avoids the 2-4 chunk launches that slowed V2.
-        if self.window>=t and attention_mask is None:
+        if self.window>=t:
+            # Mirror the original GQA SDPA path for the complete window.
+            # Qwen3.5 commonly passes a prepared causal 4D additive mask.
+            # No Python chunking or causal-mask rebuild is needed.
+            if attention_mask is None:
+                sdpa_mask=None
+                causal=True
+            elif attention_mask.ndim==4:
+                sdpa_mask=attention_mask
+                causal=False
+            elif attention_mask.ndim==2:
+                pos=torch.arange(t,device=hidden_states.device)
+                sdpa_mask=(pos[:,None]>=pos[None,:])[None,None]
+                sdpa_mask=sdpa_mask & attention_mask.bool()[:,None,None,:]
+                causal=False
+            else:
+                raise ValueError("Expected None, 2D or 4D attention mask")
             output=F.scaled_dot_product_attention(
-                query,key,value,attn_mask=None,dropout_p=0.0,is_causal=True)
+                query,key,value,attn_mask=sdpa_mask,dropout_p=0.0,
+                is_causal=causal)
         else:
             output=causal_window_anchor(
                 query,key,value,attention_mask,
