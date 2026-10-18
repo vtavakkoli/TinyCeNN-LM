@@ -118,3 +118,37 @@ def test_wrapper_rejects_cache_or_padding():
     m=Qwen35DeltaCeNNLinear(FakeQwenLinear())
     with pytest.raises(RuntimeError):m(torch.randn(1,4,8),cache_params=object())
     with pytest.raises(ValueError):m(torch.randn(1,4,8),attention_mask=torch.tensor([[1,1,0,1]]))
+
+
+def test_backend_oracle_rejected_for_cellular_or_compressed():
+    native=FakeQwenLinear()
+    with pytest.raises(ValueError,match='full-rank'):
+        Qwen35DeltaCeNNLinear(native,cells=True,native_backend_oracle=True)
+    with pytest.raises(ValueError,match='full-rank'):
+        Qwen35DeltaCeNNLinear(native,feature_dim=2,cells=False,native_backend_oracle=True)
+
+
+def test_native_backend_oracle_is_diagnostic_only(monkeypatch):
+    # A stub Qwen backend lets this contract test run without Transformers or GPU.
+    import types
+    full='transformers.models.qwen3_5.modeling_qwen3_5'
+    for package in ('transformers','transformers.models','transformers.models.qwen3_5'):
+        monkeypatch.setitem(sys.modules,package,types.ModuleType(package))
+    stub=types.ModuleType(full)
+    observed=[]
+    def chunk_backend(q,k,v,g,beta,output_final_state,use_qk_l2norm_in_kernel):
+        observed.append((q.shape,output_final_state,use_qk_l2norm_in_kernel))
+        return oracle(q.float(),k.float(),v.float(),g.float(),beta.float()).to(q.dtype),None
+    stub.torch_chunk_gated_delta_rule=chunk_backend
+    monkeypatch.setitem(sys.modules,full,stub)
+    native=FakeQwenLinear().eval().requires_grad_(False)
+    wrapper=Qwen35DeltaCeNNLinear(native,cells=False,native_backend_oracle=True).eval()
+    student=Qwen35DeltaCeNNLinear(native,cells=False,native_backend_oracle=False).eval()
+    x=torch.randn(1,5,8)
+    with torch.no_grad():
+        a=wrapper(x); b=student(x)
+    assert len(observed)==1
+    assert observed[0][1:] == (False,True)
+    assert torch.allclose(a,b,atol=5e-6)
+    assert wrapper.native_backend_oracle is True
+    assert student.native_backend_oracle is False
