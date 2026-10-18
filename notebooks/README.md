@@ -120,12 +120,12 @@ WaveFlux is a standalone traveling-cell recurrent layer with exact parallel-scan
 
 ## SmolLM2 experiments
 
-| [SmolLM2-360M V10 selective ternary CeNN replacement](SmolLM2_360M_Ternary_CeNN_Selective_Replacement_V10_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/SmolLM2_360M_Ternary_CeNN_Selective_Replacement_V10_Colab.ipynb) |
-| [SmolLM2-360M V11 multi-layer activation-aware ternary CeNN QAT + distillation](SmolLM2_360M_V11_MultiLayer_Ternary_CeNN_QAT_Distillation_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/SmolLM2_360M_V11_MultiLayer_Ternary_CeNN_QAT_Distillation_Colab.ipynb) |
 
 
 | Notebook | Run |
 |---|---|
+| [SmolLM2-360M V10 selective ternary CeNN replacement](SmolLM2_360M_Ternary_CeNN_Selective_Replacement_V10_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/SmolLM2_360M_Ternary_CeNN_Selective_Replacement_V10_Colab.ipynb) |
+| [SmolLM2-360M V11 multi-layer activation-aware ternary CeNN QAT + distillation](SmolLM2_360M_V11_MultiLayer_Ternary_CeNN_QAT_Distillation_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/SmolLM2_360M_V11_MultiLayer_Ternary_CeNN_QAT_Distillation_Colab.ipynb) |
 | [SmolLM2-360M V12 force all 32 layers (224 ternary projections)](SmolLM2_360M_V12_All32_BruteForce_Ternary_CeNN_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/SmolLM2_360M_V12_All32_BruteForce_Ternary_CeNN_Colab.ipynb) |
 | [FlyFFN v2 SmolLM2 135M](FlyFFN_v2_SmolLM2_135M_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/FlyFFN_v2_SmolLM2_135M_Colab.ipynb) |
 | [SmolLM2 MemoryFusion Sequential Acceptance v3](SmolLM2_MemoryFusion_Sequential_Acceptance_v3_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/SmolLM2_MemoryFusion_Sequential_Acceptance_v3_Colab.ipynb) |
