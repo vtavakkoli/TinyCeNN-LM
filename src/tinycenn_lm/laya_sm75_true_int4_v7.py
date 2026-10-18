@@ -31,7 +31,7 @@ def require_native_turing():
             "Installed Triton lacks tl.reinterpret_as_int4. "
             "Install Chennesxu/triton-turing SM75 fork (not upstream Triton), "
             "then RESTART the Colab runtime so the new Triton is imported.")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0]!=7:
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()!=(7,5):
         raise RuntimeError("This experimental s4xs4 backend targets SM75/Tesla T4.")
     return True
 
