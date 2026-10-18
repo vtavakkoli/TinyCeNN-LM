@@ -56,3 +56,18 @@ def test_swap_and_candidate_names_no_cuda():
     assert model.get_submodule(location) is replacement
     swap_module(model,location,old)
     assert model.get_submodule(location) is before
+
+
+def test_sm75_preflight_rejects_bf16_weight_only(monkeypatch):
+    import torch
+    from tinycenn_lm import laya_native_int4_v6 as mod
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *args:(7,5))
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *args:"Tesla T4")
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *args:False)
+    result=mod.platform_diagnostics()
+    assert result["supported"] is False
+    assert result["sm"]=="7.5"
+    assert result["bf16"] is False
+    assert "MSLK" in result["reason"]
+    assert mod.platform_diagnostics(allow_turing_experimental=True)["supported"]
