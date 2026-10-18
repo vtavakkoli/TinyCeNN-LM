@@ -14,6 +14,8 @@ Explore CeNN, integrated memory, delta-memory and compact feed-forward replaceme
 
 **New pure-cellular research prototype:** [WaveFlux-CeNN standalone mathematical reference](docs/WAVEFLUX_CENN.md) · [SmolLM2-360M-Instruct first-attention replacement experiment](docs/WAVEFLUX_SMOL360_LAYER0.md) · [GPU Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/WaveFlux_SmolLM2_360M_Layer0_Standalone_Colab.ipynb). The WaveFlux replacement module has no attention/DeltaNet/LSTM; only layer 0 is replaced in the 360M evaluation harness. Held-out quality and GPU speed remain unverified.
 
+**Feasibility-first pure-cellular research (experimental):** [Competitive CeNN theory and synthetic convergence audit](docs/COMPETITIVE_CENN_FEASIBILITY.md) · [SmolLM2-360M native-attention diagnostic Colab](notebooks/CeNN_Competitive_Attention_Feasibility_Colab.ipynb). This work does **not** claim pretrained-model parity or CUDA speedups; its content-conditioned cellular routing is functionally attention-like and must be evaluated before another layer substitution.
+
 ## Choose a starting point
 
 | Goal | Track | Notebook |
