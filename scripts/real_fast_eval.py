@@ -9,6 +9,7 @@ Important: models must be in eval mode; no cache or speculative decoding is used
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 import random
 import re
 import time
@@ -43,15 +44,39 @@ def score_chat_response(case, response):
     return bool(ok)
 
 
+def _as_input_ids(rendered):
+    """Normalize HF tensor/list/BatchEncoding chat templates to [batch, tokens].
+
+    Transformers may return BatchEncoding (a Mapping but NOT a dict) even
+    with return_tensors='pt'. Calling .shape on that object fails; select the
+    input_ids field *before* moving it to the model device.
+    """
+    if isinstance(rendered, Mapping):
+        if "input_ids" not in rendered:
+            raise ValueError("Chat tokenizer output is missing input_ids")
+        rendered = rendered["input_ids"]
+    elif not torch.is_tensor(rendered) and hasattr(rendered, "__getitem__"):
+        # Defensive support for mapping-like wrappers from older tokenizers.
+        try:
+            rendered = rendered["input_ids"]
+        except (KeyError, TypeError, IndexError):
+            pass
+    if not torch.is_tensor(rendered):
+        rendered = torch.as_tensor(rendered, dtype=torch.long)
+    if rendered.ndim == 1:
+        rendered = rendered.unsqueeze(0)
+    if rendered.ndim != 2 or rendered.size(0) != 1 or rendered.size(1) < 1:
+        raise ValueError(f"Expected a single nonempty tokenized chat, got {tuple(rendered.shape)}")
+    return rendered.to(dtype=torch.long)
+
+
 def render_chat_input(tokenizer, user):
     if hasattr(tokenizer, "apply_chat_template") and getattr(tokenizer, "chat_template", None):
         rendered = tokenizer.apply_chat_template(
             [{"role": "user", "content": user}], tokenize=True,
             add_generation_prompt=True, return_tensors="pt")
-        if isinstance(rendered, dict):
-            return rendered["input_ids"]
-        return rendered
-    return tokenizer("User: " + user + "\nAssistant:", return_tensors="pt")["input_ids"]
+        return _as_input_ids(rendered)
+    return _as_input_ids(tokenizer("User: " + user + "\nAssistant:", return_tensors="pt"))
 
 
 @torch.inference_mode()
