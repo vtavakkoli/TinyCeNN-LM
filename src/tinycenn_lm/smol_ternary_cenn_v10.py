@@ -235,3 +235,35 @@ def benchmark_pair(a,b,batches,repeats=5):
             ternary_ms=float(statistics.median(bb)),
             speedup=float(statistics.median(ratios))))
     return records
+
+
+def prepare_chat_generation_inputs(tokenizer, question:str, device="cuda"):
+    """Encode a chat safely on Transformers versions returning BatchEncoding.
+
+    Some new apply_chat_template(tokenize=True,return_tensors="pt") calls
+    return a BatchEncoding rather than a Tensor. Calling .cuda() on such an
+    object raises AttributeError('cuda'). Render as text, encode normally,
+    move the *contained tensors*, and carry the attention mask into generate.
+    """
+    if not isinstance(question,str) or not question.strip():
+        raise ValueError("Expected a nonempty user chat question")
+    rendered=tokenizer.apply_chat_template(
+        [{"role":"user","content":question}],
+        add_generation_prompt=True,
+        tokenize=False)
+    if not isinstance(rendered,str) or not rendered:
+        raise TypeError("Expected rendered chat template string")
+    batch=tokenizer(rendered,return_tensors="pt",add_special_tokens=False)
+    if "input_ids" not in batch:
+        raise KeyError("Tokenizer did not return input_ids")
+    ids=batch["input_ids"]
+    if not isinstance(ids,torch.Tensor) or ids.ndim!=2:
+        raise TypeError("Expected input_ids tensor [batch, sequence]")
+    data={"input_ids":ids.to(device)}
+    attention=batch.get("attention_mask")
+    if attention is None:
+        attention=torch.ones_like(ids)
+    if not isinstance(attention,torch.Tensor) or attention.shape!=ids.shape:
+        raise TypeError("Expected attention_mask tensor matching input_ids")
+    data["attention_mask"]=attention.to(device)
+    return data
