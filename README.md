@@ -18,6 +18,8 @@ Explore CeNN, integrated memory, delta-memory and compact feed-forward replaceme
 
 **New CCM-v2 feasibility control with chat:** [Cellular consensus design and limitations](docs/CCM_CONSENSUS_V2_SMOL360_CHAT.md) · [Colab for SmolLM2-360M-Instruct first-attention replacement, DEV/test gates and five side-by-side chats](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/research/competitive-cenn-feasibility/notebooks/CCM_v2_SmolLM2_360M_Consensus_Chat_Colab.ipynb). This is an **experimental research branch**, and its soft cellular consensus is mathematically equivalent to local attention over a bounded tape; no model fidelity or GPU gains are claimed before running.\n\n**CCM-v2 real-label train/resume/eval Colab:** [Train the layer-0 CCM from scratch, resume a checkpoint ZIP, or evaluate saved weights; then check gold WikiText NLL, ARC-Easy, chat rules and CUDA speed](notebooks/CCM_v2_Smol360_RealFastEval_Only_Colab.ipynb). Only the cellular layer trains. Teacher agreement is diagnostic, not a quality gate.
 
+**CCM-v3 corrective experiment:** [Pretrained RoPE + grouped-head cellular consensus, native-parity preflight, gold-label training, chat and GPU tests](notebooks/CCM_v3_Smol360_RoPE_Parity_Chat_Colab.ipynb). [Why the old CCM-v2 failed and what v3 actually proves](docs/CCM_V3_ROPE_PARITY_FIRST.md). V3 is an **attention-equivalent baseline**, not an attention-free or faster model.
+
 ## Choose a starting point
 
 | Goal | Track | Notebook |
