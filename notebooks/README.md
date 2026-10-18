@@ -1,6 +1,6 @@
 # Notebook catalog
 
-All **116 notebooks** live under this directory: **86 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
+All **117 notebooks** live under this directory: **87 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
 
 [Project overview](../README.md) · [Model status](../MODEL_STATUS.md) · [Archived notebooks](archive/README.md) · [Path migration](../docs/NOTEBOOK_MIGRATION.md)
 
@@ -92,6 +92,7 @@ WaveFlux is a standalone traveling-cell recurrent layer with exact parallel-scan
 | [Qwen3.5 0.8B CeNN V5 Head Rescue (experimental)](Qwen35_08B_CeNN_HeadRescue_V5_Quality_First_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNN_HeadRescue_V5_Quality_First_Colab.ipynb) |
 | [Qwen3.5 0.8B CeNN V5.2 Fidelity Recovery (experimental)](Qwen35_08B_CeNN_HeadRescue_V52_FidelityRecovery_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNN_HeadRescue_V52_FidelityRecovery_Colab.ipynb) |
 | [Qwen3.5 0.8B CeNN V5.3 Cross-Calibrated Head Rescue (experimental)](Qwen35_08B_CeNN_HeadRescue_V53_CrossCalibrated_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNN_HeadRescue_V53_CrossCalibrated_Colab.ipynb) |
+| [Qwen3.5-0.8B CeNN V5.3 all six full-attention layers (experimental)](Qwen35_08B_CeNN_V53_All6_FullAttention_Sequential_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNN_V53_All6_FullAttention_Sequential_Colab.ipynb) |
 | [Qwen3.5 0.8B CeNN V5.1 Checkpoint-Guided Head Rescue (experimental)](Qwen35_08B_CeNN_HeadRescue_V51_Warmstart_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNN_HeadRescue_V51_Warmstart_Colab.ipynb) |
 | [Qwen35 08B FlyCore from v3 Standalone](Qwen35_08B_FlyCore_from_v3_Standalone_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_FlyCore_from_v3_Standalone_Colab.ipynb) |
 | [Qwen35 08B FlyCore v2 from v3](Qwen35_08B_FlyCore_v2_from_v3_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_FlyCore_v2_from_v3_Colab.ipynb) |
