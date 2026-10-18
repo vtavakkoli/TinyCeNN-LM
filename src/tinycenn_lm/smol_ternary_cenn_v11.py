@@ -127,7 +127,22 @@ class PackedCeNNLinear(nn.Module):
         self.register_buffer("feature_gain",gain)
 
     def forward(self,x):
-        y=self.base(x)
+        # V9 packed linear deliberately uses no_grad during tiled reconstruction.
+        # That is good for inference but would detach the input gradient from
+        # any earlier QAT projection when distilling multiple layers. Preserve
+        # activation gradients on the small training-only path. The packed
+        # weights are buffers and are NEVER made trainable here.
+        if torch.is_grad_enabled() and x.requires_grad:
+            shape=(*x.shape[:-1],self.out_features)
+            y=torch.empty(shape,device=x.device,dtype=x.dtype)
+            for begin in range(0,self.out_features,self.base.chunk_rows):
+                end=min(self.out_features,begin+self.base.chunk_rows)
+                weight=self.base.decode_rows(begin,end,x.dtype)
+                bias=(self.base.bias[begin:end].to(x.dtype)
+                      if self.base.bias is not None else None)
+                y[...,begin:end]=F.linear(x,weight,bias)
+        else:
+            y=self.base(x)
         if self.left is not None:
             y=y+F.linear(F.linear(x,self.right.to(x.dtype)),self.left.to(x.dtype))
         if self.feature_gain is not None:
