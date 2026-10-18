@@ -34,6 +34,16 @@ WaveFlux is a standalone traveling-cell recurrent layer with exact parallel-scan
 
 ## Laya / ModernBERT
 
+### New ternary and GPU inference research
+
+| Notebook | Run |
+|---|---|
+| [Laya V6 native INT4 GPU speed/accuracy gates](Laya_V6_Native_INT4_Fast_GPU_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V6_Native_INT4_Fast_GPU_Colab.ipynb) |
+| [Laya V7 T4 s4×s4 experimental path (retired; redirects to V8)](Laya_V7_T4_True_INT4xINT4_TensorCore_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V7_T4_True_INT4xINT4_TensorCore_Colab.ipynb) |
+| [Laya V8 T4 bitsandbytes precompiled INT4](Laya_V8_T4_Precompiled_BNB_Fast_INT4_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V8_T4_Precompiled_BNB_Fast_INT4_Colab.ipynb) |
+| [Laya V9 ternary CeNN {-1,0,+1} concat/memory ablation](Laya_V9_Ternary_CeNN_Concat_Memory_Ablation_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V9_Ternary_CeNN_Concat_Memory_Ablation_Colab.ipynb) |
+
+
 **FP16 benchmark V2:** [Compiled-original control + complete API](Laya_FP16_Compiled_Control_API_V2_Colab.ipynb) · [Run in Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/codex/laya-fp16-fast-inference/notebooks/Laya_FP16_Compiled_Control_API_V2_Colab.ipynb). Separates compilation gains from implementation gains; supports custom JSONL cases.
 
 **Existing FP16 model, faster inference:** [Notebook](Laya_FP16_Fast_Inference_Colab.ipynb) · [Run in Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/codex/laya-fp16-fast-inference/notebooks/Laya_FP16_Fast_Inference_Colab.ipynb). Parity-gated SDPA, compilation and CUDA-graph benchmark; no retraining.
@@ -109,6 +119,10 @@ WaveFlux is a standalone traveling-cell recurrent layer with exact parallel-scan
 | [Qwen3 5 0 8B PDelta3 CLVR Sequential](Qwen3_5_0_8B_PDelta3_CLVR_Sequential_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen3_5_0_8B_PDelta3_CLVR_Sequential_Colab.ipynb) |
 
 ## SmolLM2 experiments
+
+| [SmolLM2-360M V10 selective ternary CeNN replacement](SmolLM2_360M_Ternary_CeNN_Selective_Replacement_V10_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/SmolLM2_360M_Ternary_CeNN_Selective_Replacement_V10_Colab.ipynb) |
+| [SmolLM2-360M V11 multi-layer activation-aware ternary CeNN QAT + distillation](SmolLM2_360M_V11_MultiLayer_Ternary_CeNN_QAT_Distillation_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/SmolLM2_360M_V11_MultiLayer_Ternary_CeNN_QAT_Distillation_Colab.ipynb) |
+
 
 | Notebook | Run |
 |---|---|
