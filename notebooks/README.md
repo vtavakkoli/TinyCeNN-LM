@@ -31,7 +31,7 @@ Do **not** retrain another SmolLM2-360M replacement before checking the original
 |---|---|
 | [Competitive CeNN Attention Feasibility](CeNN_Competitive_Attention_Feasibility_Colab.ipynb) | [Colab (research branch)](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/research/competitive-cenn-feasibility/notebooks/CeNN_Competitive_Attention_Feasibility_Colab.ipynb) |
 
-| [CCM-v2 trained checkpoint real fast evaluation only](CCM_v2_Smol360_RealFastEval_Only_Colab.ipynb) | [Colab (research branch)](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/research/competitive-cenn-feasibility/notebooks/CCM_v2_Smol360_RealFastEval_Only_Colab.ipynb) |
+| [CCM-v2 train new / resume checkpoint / real fast evaluation](CCM_v2_Smol360_RealFastEval_Only_Colab.ipynb) | [Colab (research branch)](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/research/competitive-cenn-feasibility/notebooks/CCM_v2_Smol360_RealFastEval_Only_Colab.ipynb) |
 | [CCM-v2 Multi-cell Consensus × SmolLM2-360M-Instruct Layer-0 and Chat Evaluation](CCM_v2_SmolLM2_360M_Consensus_Chat_Colab.ipynb) | [Colab (research branch)](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/research/competitive-cenn-feasibility/notebooks/CCM_v2_SmolLM2_360M_Consensus_Chat_Colab.ipynb) |\n\n## Core references
 
 | Notebook | Run |
