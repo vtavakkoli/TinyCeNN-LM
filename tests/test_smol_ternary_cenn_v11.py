@@ -14,6 +14,12 @@ def test_ste_gradients_codes_group_scales_and_pack_roundtrip():
     torch.manual_seed(3)
     baseline=nn.Linear(256,128,bias=False).float()
     qat=TernaryQATLinear(baseline,rank=0,feature_residual=True)
+    from tinycenn_lm.laya_cenn_ternary_concat_v9 import ternarize_g128
+    legacy_codes,_=ternarize_g128(baseline.weight.detach())
+    assert torch.equal(qat.quantized_codes(),legacy_codes)
+    # Code latents must be able to move across rounding boundaries during
+    # short QAT; a purely integer initialization would barely change codes.
+    assert ((qat.codes.detach()-qat.quantized_codes().float()).abs()>0.001).any()
     x=torch.randn(2,11,256)
     target=baseline(x).detach()
     loss=(qat(x)-target).float().square().mean()
