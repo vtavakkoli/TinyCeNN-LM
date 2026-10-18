@@ -16,7 +16,9 @@ Explore CeNN, integrated memory, delta-memory and compact feed-forward replaceme
 
 **Feasibility-first pure-cellular research (experimental):** [Competitive CeNN theory and synthetic convergence audit](docs/COMPETITIVE_CENN_FEASIBILITY.md) · [SmolLM2-360M native-attention diagnostic Colab](notebooks/CeNN_Competitive_Attention_Feasibility_Colab.ipynb). This work does **not** claim pretrained-model parity or CUDA speedups; its content-conditioned cellular routing is functionally attention-like and must be evaluated before another layer substitution.
 
-**New CCM-v2 feasibility control with chat:** [Cellular consensus design and limitations](docs/CCM_CONSENSUS_V2_SMOL360_CHAT.md) · [Colab for SmolLM2-360M-Instruct first-attention replacement, DEV/test gates and five side-by-side chats](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/research/competitive-cenn-feasibility/notebooks/CCM_v2_SmolLM2_360M_Consensus_Chat_Colab.ipynb). This is an **experimental research branch**, and its soft cellular consensus is mathematically equivalent to local attention over a bounded tape; no model fidelity or GPU gains are claimed before running.\n\n## Choose a starting point
+**New CCM-v2 feasibility control with chat:** [Cellular consensus design and limitations](docs/CCM_CONSENSUS_V2_SMOL360_CHAT.md) · [Colab for SmolLM2-360M-Instruct first-attention replacement, DEV/test gates and five side-by-side chats](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/research/competitive-cenn-feasibility/notebooks/CCM_v2_SmolLM2_360M_Consensus_Chat_Colab.ipynb). This is an **experimental research branch**, and its soft cellular consensus is mathematically equivalent to local attention over a bounded tape; no model fidelity or GPU gains are claimed before running.\n\n**Real evaluation of existing CCM-v2 weights (no retraining):** [Upload previous checkpoint ZIP, test labeled ARC-Easy + WikiText gold accuracy/NLL + objective chat + CUDA speed](notebooks/CCM_v2_Smol360_RealFastEval_Only_Colab.ipynb). Exact teacher wording is not a quality gate.
+
+## Choose a starting point
 
 | Goal | Track | Notebook |
 |---|---|---|
