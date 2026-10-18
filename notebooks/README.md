@@ -1,6 +1,6 @@
 # Notebook catalog
 
-All **119 notebooks** live under this directory: **89 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
+All **120 notebooks** live under this directory: **90 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
 
 [Project overview](../README.md) · [Model status](../MODEL_STATUS.md) · [Archived notebooks](archive/README.md) · [Path migration](../docs/NOTEBOOK_MIGRATION.md)
 
@@ -32,7 +32,9 @@ Do **not** retrain another SmolLM2-360M replacement before checking the original
 | [Competitive CeNN Attention Feasibility](CeNN_Competitive_Attention_Feasibility_Colab.ipynb) | [Colab (research branch)](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/research/competitive-cenn-feasibility/notebooks/CeNN_Competitive_Attention_Feasibility_Colab.ipynb) |
 
 | [CCM-v2 train new / resume checkpoint / real fast evaluation](CCM_v2_Smol360_RealFastEval_Only_Colab.ipynb) | [Colab (research branch)](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/research/competitive-cenn-feasibility/notebooks/CCM_v2_Smol360_RealFastEval_Only_Colab.ipynb) |
-| [CCM-v2 Multi-cell Consensus × SmolLM2-360M-Instruct Layer-0 and Chat Evaluation](CCM_v2_SmolLM2_360M_Consensus_Chat_Colab.ipynb) | [Colab (research branch)](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/research/competitive-cenn-feasibility/notebooks/CCM_v2_SmolLM2_360M_Consensus_Chat_Colab.ipynb) |\n\n## Core references
+| [CCM-v2 Multi-cell Consensus × SmolLM2-360M-Instruct Layer-0 and Chat Evaluation](CCM_v2_SmolLM2_360M_Consensus_Chat_Colab.ipynb) | [Colab (research branch)](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/research/competitive-cenn-feasibility/notebooks/CCM_v2_SmolLM2_360M_Consensus_Chat_Colab.ipynb) |\n\n| [CCM-v3 position-aware, native-pretrained parity-first SmolLM2 360M + chat](CCM_v3_Smol360_RoPE_Parity_Chat_Colab.ipynb) | [Colab (research branch)](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/research/competitive-cenn-feasibility/notebooks/CCM_v3_Smol360_RoPE_Parity_Chat_Colab.ipynb) |
+
+## Core references
 
 | Notebook | Run |
 |---|---|
