@@ -42,7 +42,7 @@ class SmolTernaryProjection(nn.Module):
         self.register_buffer("residual_left",None)
         self.register_buffer("residual_right",None)
         self.stencil_gain=float(stencil_gain)
-        self.stencil=(TernaryCeNNStencil([[1,-1,0],[-1,1,0]])
+        self.stencil=(TernaryCeNNStencil([[1,-1,0],[0,1,0]])
                      if stencil_gain else None)
         if self.stencil is not None and self.in_features!=self.out_features:
             raise ValueError("CeNN stencil residual requires square projection")
@@ -98,7 +98,7 @@ class CeNNOnlyProjection(nn.Module):
     """CeNN cell stands in for a *square* pretrained projection.
 
     This is a radical architectural replacement; without training, accuracy
-    likely fails. Only causal (left/center) taps are used. Recurrent KV-state
+    likely fails. Only causal (left/center) taps are used; nonzero left coefficient. Recurrent KV-state
     caching for the stencil is NOT implemented, so it is a prefill-only control.
     """
     def __init__(self,width,original_bias=None):
@@ -107,7 +107,7 @@ class CeNNOnlyProjection(nn.Module):
         # Causal decoder: right/next-token coefficients MUST be zero.
         # A nonzero right tap would leak future tokens into SmolLM2 logits.
         self.stencil=TernaryCeNNStencil([
-            [-1,1,0],[1,-1,0],[0,1,0]
+            [-1,1,0],[0,1,0],[0,-1,0]
         ])
         if original_bias is None:
             self.register_buffer("bias",None)
