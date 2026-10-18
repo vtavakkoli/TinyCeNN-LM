@@ -40,15 +40,23 @@ def backend_configs(group_size: int = 128,
         except (TypeError, ValueError, AssertionError, AttributeError):
             pass
 
-    # Historical TorchAO builds expose GemLite as GemliteUIntXWeightOnlyConfig;
-    # some newer builds removed that spelling. Its absence is NOT an error.
+    # TorchAO 0.17 renamed GemliteUIntXWeightOnlyConfig to
+    # torchao.prototype.UIntxWeightOnlyConfig. Probe exact exposed API.
+    # GemLite kernels are a useful option for encoder M>=512 workloads.
     if include_gemlite:
         try:
             import gemlite  # noqa: F401
-            from torchao.quantization import GemliteUIntXWeightOnlyConfig
-            configs["gemlite_int4"] = GemliteUIntXWeightOnlyConfig(
-                group_size=group_size, bit_width=4, mode="weight_only",
-                set_inductor_config=False)
+            try:
+                from torchao.prototype import UIntxWeightOnlyConfig
+                config = UIntxWeightOnlyConfig(
+                    group_size=group_size, bit_width=4, packing_bitwidth=32)
+            except (ImportError, TypeError, ValueError, AttributeError):
+                from torchao.prototype.quantization.quant_api import (
+                    GemliteUIntXWeightOnlyConfig)
+                config = GemliteUIntXWeightOnlyConfig(
+                    group_size=group_size, bit_width=4, packing_bitwidth=32,
+                    mode="weight_only", set_inductor_config=False)
+            configs["gemlite_int4"] = config
         except (ImportError, TypeError, ValueError, AttributeError):
             pass
     return configs
