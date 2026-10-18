@@ -1,6 +1,6 @@
 # Notebook catalog
 
-All **116 notebooks** live under this directory: **86 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
+All **117 notebooks** live under this directory: **87 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
 
 [Project overview](../README.md) · [Model status](../MODEL_STATUS.md) · [Archived notebooks](archive/README.md) · [Path migration](../docs/NOTEBOOK_MIGRATION.md)
 
@@ -22,6 +22,14 @@ WaveFlux is a standalone traveling-cell recurrent layer with exact parallel-scan
 |---|---|
 | [WaveFlux-CeNN Standalone Reference](WaveFlux_CeNN_Standalone_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/WaveFlux_CeNN_Standalone_Colab.ipynb) |
 | [WaveFlux × SmolLM2-360M-Instruct Layer-0 Pure Cellular Replacement](WaveFlux_SmolLM2_360M_Layer0_Standalone_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/WaveFlux_SmolLM2_360M_Layer0_Standalone_Colab.ipynb) |
+
+## Standalone cellular competition — theoretical feasibility (experimental)
+
+Do **not** retrain another SmolLM2-360M replacement before checking the original layer-0 attention concentration and top-k oracle error. [Theory, failed WaveFlux reference, and CPU convergence experiments](../docs/COMPETITIVE_CENN_FEASIBILITY.md). The competitor uses only cellular local routing, but content-selective retrieval is functionally attention-like and no GPU advantage has been demonstrated.
+
+| Notebook | Run |
+|---|---|
+| [Competitive CeNN Attention Feasibility](CeNN_Competitive_Attention_Feasibility_Colab.ipynb) | [Colab (research branch)](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/research/competitive-cenn-feasibility/notebooks/CeNN_Competitive_Attention_Feasibility_Colab.ipynb) |
 
 ## Core references
 
