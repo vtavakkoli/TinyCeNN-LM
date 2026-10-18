@@ -80,9 +80,12 @@ class TernaryQATLinear(nn.Module):
         return self.log_scales.clamp(-16,6).exp()
 
     def fake_weight(self):
-        real=self.codes.clamp(-1,1)
-        hard=real.round()
-        q=real+(hard-real).detach() # derivative d(q)/d(codes)=1 within range
+        # Saturation-aware forward, *unclipped* STE gradient: if master code
+        # drifts outside [-1,+1], it must remain trainable to return inside.
+        # Forward is always strictly {-1,0,+1}; no stochastic forward codes.
+        real=self.codes
+        hard=real.round().clamp(-1,1)
+        q=real+(hard-real).detach()
         w=q.reshape(self.out_features,self.groups,GROUP)
         w=w*self.scales().unsqueeze(-1)
         return w.reshape(self.out_features,self.padded)[:,:self.in_features]
