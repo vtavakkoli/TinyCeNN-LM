@@ -39,3 +39,28 @@ The `finally` block creates `qwen35_delta_cenn_all24_results.zip` and asks Colab
 - The Qwen convolution must use `silu` or `gelu` as coded; a model architecture change raises a clear exception.
 - The native-attention parity gate may be backend/dtype sensitive; failing it stops the experiment rather than hiding mismatches.
 - Artifact auto-download requires Colab/browser cooperation; a terminated runtime cannot guarantee export.
+
+
+## Parity fix (native chunk vs token recurrence)
+
+The initial all-24 Colab failed on `delta_parity=0.234375` with an arbitrary
+`max_abs<0.15` threshold. The reported Hugging Face `HF_TOKEN` warning is
+nonfatal for public Qwen downloads; optional causal-conv/FLA fallbacks impact
+performance and kernel numerical order, not download correctness.
+
+The notebook now evaluates **two separate adapters** before training:
+
+- `native_backend_oracle=True, cells=False`: executes Qwen's original
+  `torch_chunk_gated_delta_rule` behind the Delta-CeNN projection/gate adapter.
+  This is **diagnostic only**, never a substitute for the trainable Delta-CeNN
+  recurrence or evidence of new-model speed. It must match native logits within
+  the strict adapter parity requirement.
+- `native_backend_oracle=False, cells=False`: executes the genuine tokenwise
+  FP32 Delta-CeNN recurrence. Its logit drift against the original chunkwise
+  implementation is measured with maximum absolute error, normalized MSE, cosine,
+  and teacher top-1 agreement, and written to `parity_diagnostics.json`. It
+  is an approximation comparison, not a bit-exact interoperability oracle.
+
+All trainable `cells=True` candidates unconditionally use `DeltaCeNNRule` and
+are evaluated against strict local, model-level and speed gates. A nonzero
+token recurrence discrepancy is not silently accepted as model success.
