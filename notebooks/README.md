@@ -126,6 +126,7 @@ WaveFlux is a standalone traveling-cell recurrent layer with exact parallel-scan
 
 | Notebook | Run |
 |---|---|
+| [SmolLM2-360M V12 force all 32 layers (224 ternary projections)](SmolLM2_360M_V12_All32_BruteForce_Ternary_CeNN_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/SmolLM2_360M_V12_All32_BruteForce_Ternary_CeNN_Colab.ipynb) |
 | [FlyFFN v2 SmolLM2 135M](FlyFFN_v2_SmolLM2_135M_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/FlyFFN_v2_SmolLM2_135M_Colab.ipynb) |
 | [SmolLM2 MemoryFusion Sequential Acceptance v3](SmolLM2_MemoryFusion_Sequential_Acceptance_v3_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/SmolLM2_MemoryFusion_Sequential_Acceptance_v3_Colab.ipynb) |
 | [SmolLM2 Nonlinear Recurrent Readout](SmolLM2_Nonlinear_Recurrent_Readout_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/SmolLM2_Nonlinear_Recurrent_Readout_Colab.ipynb) |
