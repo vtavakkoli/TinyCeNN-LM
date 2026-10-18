@@ -230,11 +230,15 @@ def platform_diagnostics(allow_turing_experimental=False) -> dict[str, Any]:
     major,minor=torch.cuda.get_device_capability()
     name=torch.cuda.get_device_name()
     sm=f"{major}.{minor}"
-    can_bf16=bool(torch.cuda.is_bf16_supported())
+    # torch.cuda.is_bf16_supported() may return True for software/emulated
+    # BF16 conversion on SM75, which does NOT mean native BF16 Tensor Cores.
+    framework_bf16=bool(torch.cuda.is_bf16_supported())
+    native_bf16_tensor_cores=(major>=8 and framework_bf16)
     if major<8:
         return {
             "supported":bool(allow_turing_experimental),
-            "gpu":name,"sm":sm,"bf16":can_bf16,
+            "gpu":name,"sm":sm,"bf16":native_bf16_tensor_cores,
+            "framework_reports_bf16":framework_bf16,
             "reason":(
                 "Turing/SM75 has no BF16 support; TorchAO tiled INT4 "
                 "requires BF16 activation. Stable MSLK 1.0 excludes SM75. "
@@ -247,7 +251,8 @@ def platform_diagnostics(allow_turing_experimental=False) -> dict[str, Any]:
             ),
         }
     return {
-        "supported":True,"gpu":name,"sm":sm,"bf16":can_bf16,
+        "supported":True,"gpu":name,"sm":sm,"bf16":native_bf16_tensor_cores,
+            "framework_reports_bf16":framework_bf16,
         "reason":"SM80+ supports BF16; actual packed INT4 kernels still need probing.",
         "recommendation":"Benchmark A100/H100 first; use L4 as experimental."
     }
