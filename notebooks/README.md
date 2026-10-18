@@ -1,6 +1,6 @@
 # Notebook catalog
 
-All **114 notebooks** live under this directory: **84 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
+All **116 notebooks** live under this directory: **86 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
 
 [Project overview](../README.md) · [Model status](../MODEL_STATUS.md) · [Archived notebooks](archive/README.md) · [Path migration](../docs/NOTEBOOK_MIGRATION.md)
 
@@ -13,6 +13,15 @@ All **114 notebooks** live under this directory: **84 current entries** and **30
 The core labels carry forward the existing model-status guide; this reorganization does not establish new benchmark results. Experiments and benchmarks are not validated model releases.
 
 **CeNNMixer-v4:** the canonical notebook now uses direct layer-0 replacement and 1024-token training, matching the current runner. Older alpha-schedule variants are archived.
+
+## Pure cellular WaveFlux-CeNN (experimental)
+
+WaveFlux is a standalone traveling-cell recurrent layer with exact parallel-scan reference (no attention/QKV/DeltaNet/LSTM). The SmolLM2-360M-Instruct experiment **replaces only the first attention module** as a controlled first-step evaluation; the remainder of the language model is still native. Passing CPU unit tests is **not** a GPU speed or quality result. See [architecture](../docs/WAVEFLUX_CENN.md) and [first-layer protocol](../docs/WAVEFLUX_SMOL360_LAYER0.md).
+
+| Notebook | Run |
+|---|---|
+| [WaveFlux-CeNN Standalone Reference](WaveFlux_CeNN_Standalone_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/WaveFlux_CeNN_Standalone_Colab.ipynb) |
+| [WaveFlux × SmolLM2-360M-Instruct Layer-0 Pure Cellular Replacement](WaveFlux_SmolLM2_360M_Layer0_Standalone_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/WaveFlux_SmolLM2_360M_Layer0_Standalone_Colab.ipynb) |
 
 ## Core references
 
