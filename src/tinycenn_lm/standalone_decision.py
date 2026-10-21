@@ -242,7 +242,14 @@ class StandaloneDecisionModel(nn.Module):
             top1 = p.topk(1, dim=-1).values
             top2 = torch.cat((top1, torch.zeros_like(top1)), dim=-1)
         features = torch.stack((top2[:, 0], top2[:, 0] - top2[:, 1], ent, k / 255.0), dim=-1)
-        act_logits = self.act_head(torch.cat((h[:, 0].float(), features), dim=-1))
+        # Decision features are computed in float32 for numerical stability,
+        # but an exported FP16/BF16 model has lower-precision act_head weights.
+        # Cast the *input*, not the module/weights, so inference works without
+        # relying on CUDA autocast (e.g. plain model(**batch), benchmarking,
+        # and StandaloneDecisionRuntime.decide after Hub loading).
+        act_input = torch.cat((h[:, 0].float(), features), dim=-1)
+        act_input = act_input.to(dtype=self.act_head[0].weight.dtype)
+        act_logits = self.act_head(act_input)
         return logits, act_logits
 
 

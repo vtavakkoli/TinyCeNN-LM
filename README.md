@@ -12,6 +12,8 @@ Explore CeNN, integrated memory, delta-memory and compact feed-forward replaceme
 
 **Laya FP16 V2:** [Compiled control and end-to-end API notebook](notebooks/Laya_FP16_Compiled_Control_API_V2_Colab.ipynb) · [Benchmark protocol](docs/LAYA_FP16_BENCHMARK_V2.md).
 
+**New pure-cellular research prototype:** [WaveFlux-CeNN standalone mathematical reference](docs/WAVEFLUX_CENN.md) · [SmolLM2-360M-Instruct first-attention replacement experiment](docs/WAVEFLUX_SMOL360_LAYER0.md) · [GPU Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/WaveFlux_SmolLM2_360M_Layer0_Standalone_Colab.ipynb). The WaveFlux replacement module has no attention/DeltaNet/LSTM; only layer 0 is replaced in the 360M evaluation harness. Held-out quality and GPU speed remain unverified.
+
 ## Choose a starting point
 
 | Goal | Track | Notebook |
