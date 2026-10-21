@@ -7,6 +7,9 @@ on:
 jobs:
   tests:
     runs-on: ubuntu-latest
+    env:
+      OMP_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,11 +23,10 @@ jobs:
           python -m pip install pytest "transformers==5.17.0" datasets nbformat pandas matplotlib safetensors huggingface_hub
           python -m pip install -e . --no-deps
       - name: Unit tests
-        run: pytest -q
-      - name: Standalone model CPU parity (Transformers 4.57.6)
+        # These three suites exercise the checkpoint's version-specific encoder.
+        # Run them in the standalone job below, not against a different runtime.
         run: |
-          python -m pip install "transformers==4.57.6"
-          pytest -q tests/test_hf_standalone_bundle.py tests/test_v31_all_attention_bundle.py tests/test_jev_cenn_layer15_ablation.py tests/test_jev_cenn_attention_free.py tests/test_jev_cenn_pairwindow_superlayer.py tests/test_jev_cenn_full_encoder.py tests/test_jev_cenn_selective.py tests/test_jev_cenn_global_local_repeat.py
+          pytest -q --ignore=tests/test_laya_fast_inference.py --ignore=tests/test_laya_fp16_benchmark_v2.py --ignore=tests/test_laya_layer_search_v3.py
       - name: Python syntax check
         run: python -m compileall -q src scripts tests
       - name: Shell syntax check
@@ -35,3 +37,25 @@ jobs:
         run: |
           docker compose config --quiet
           docker compose -f docker-compose.test.yml config --quiet
+
+  standalone:
+    name: Standalone CPU parity (Transformers 4.57.6)
+    runs-on: ubuntu-latest
+    env:
+      OMP_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install pinned standalone dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install pytest "transformers==4.57.6" "datasets>=2.20,<5" nbformat pandas matplotlib safetensors "huggingface_hub>=0.25,<1"
+          python -m pip install -e . --no-deps
+      - name: Standalone and Laya CPU parity
+        run: |
+          pytest -q tests/test_hf_standalone_bundle.py tests/test_v31_all_attention_bundle.py tests/test_jev_cenn_layer15_ablation.py tests/test_jev_cenn_attention_free.py tests/test_jev_cenn_pairwindow_superlayer.py tests/test_jev_cenn_full_encoder.py tests/test_jev_cenn_selective.py tests/test_jev_cenn_global_local_repeat.py tests/test_laya_fast_inference.py tests/test_laya_fp16_benchmark_v2.py tests/test_laya_layer_search_v3.py

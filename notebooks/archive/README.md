@@ -36,3 +36,5 @@ Use the [current catalog](../README.md) for new runs. The [migration record](../
 | [Laya V2.5 T4 failed recovery, 2026-10-05](Laya_V25_T4_failed_recovery_20261005.ipynb) | Historical executed run before recovery safeguards; outputs preserved |
 | [Laya V2.5 Delta recovery, 2026-10-06](Laya_V25_Delta_recovery_20261006.ipynb) | Stable recovery, incomplete gold stage before sliding CeNN replacement |
 | [Laya V2.5 sliding CeNN recovery failure, 2026-10-06](Laya_V25_SlidingCeNN_recovery_failure_20261006.ipynb) | Completed local transfer; Stage B non-finite loss at step 74 |
+
+- [Laya FP16 executed notebook snapshot](Laya_FP16_Fast_Inference_Executed.ipynb) — preserved with recorded outputs; active notebook remains in `notebooks/`.

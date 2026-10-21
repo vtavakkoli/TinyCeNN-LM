@@ -176,6 +176,34 @@ WaveFlux is a standalone traveling-cell recurrent layer with exact parallel-scan
 
 ## Laya FP16 V3: all-28-layer brute-force search
 
-[Open V3 in Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/codex/laya-fp16-fast-inference/notebooks/Laya_FP16_All28_BruteForce_V3_Colab.ipynb) · [Method and V2 findings](../docs/LAYA_FP16_LAYER_SEARCH_V3.md)
+[V3 notebook](Laya_FP16_All28_BruteForce_V3_Colab.ipynb) · [Open V3 in Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_FP16_All28_BruteForce_V3_Colab.ipynb) · [Method and V2 findings](../docs/LAYA_FP16_LAYER_SEARCH_V3.md)
 
 Search attention/FFN/block bypasses and activation-ranked FFN channel pruning at every layer, then bounded combinations. Includes labelled case-disjoint validation, compiled speed controls, complete API timing, a final official-test audit and a reconstructable recipe. GPU results are required before claiming further improvement.
+
+### Additional experiment notebooks
+
+- [Jev_CeNN_All28_AttentionOnly_BruteForce_FrozenFFN_V4_Colab](Jev_CeNN_All28_AttentionOnly_BruteForce_FrozenFFN_V4_Colab.ipynb)
+- [Jev_CeNN_All28_FP16_Stable_Joint_Substitution_V7_Colab](Jev_CeNN_All28_FP16_Stable_Joint_Substitution_V7_Colab.ipynb)
+- [Jev_CeNN_All28_Forced_Complete_HF_Export_V5_Colab](Jev_CeNN_All28_Forced_Complete_HF_Export_V5_Colab.ipynb)
+- [Jev_CeNN_All28_Substitution_LR_0p01_to_0p002_V6_Colab](Jev_CeNN_All28_Substitution_LR_0p01_to_0p002_V6_Colab.ipynb)
+- [Jev_CeNN_Layer15_FrozenFFN_GlobalAnchors_FastV3_Colab](Jev_CeNN_Layer15_FrozenFFN_GlobalAnchors_FastV3_Colab.ipynb)
+- [Jev_CeNN_Layer15_FrozenFFN_Window_CeNN_Ablation_Colab](Jev_CeNN_Layer15_FrozenFFN_Window_CeNN_Ablation_Colab.ipynb)
+- [Jev_CeNN_Top_AttentionOnly_FrozenFFN_Fast_Colab](Jev_CeNN_Top_AttentionOnly_FrozenFFN_Fast_Colab.ipynb)
+- [Laya-1.2-speedup](Laya-1.2-speedup.ipynb)
+- [Laya_1p2_All28_MixedBit_SparseRecovery_V4_Colab](Laya_1p2_All28_MixedBit_SparseRecovery_V4_Colab.ipynb)
+- [Laya_1p2_FP16_Ternary_Cascade_GPU_Ablation_Colab](Laya_1p2_FP16_Ternary_Cascade_GPU_Ablation_Colab.ipynb)
+- [Laya_1p2_Force_All28_MixedBit_Accuracy_Recovery_Colab](Laya_1p2_Force_All28_MixedBit_Accuracy_Recovery_Colab.ipynb)
+- [Laya_1p2_Speedup_Full_Standalone_Export_Colab](Laya_1p2_Speedup_Full_Standalone_Export_Colab.ipynb)
+- [Laya_1p2_Speedup_Full_Standalone_FP16_Export_Colab](Laya_1p2_Speedup_Full_Standalone_FP16_Export_Colab.ipynb)
+- [Laya_1p2_Tiled_Ternary_V2_ActivationAware_Colab](Laya_1p2_Tiled_Ternary_V2_ActivationAware_Colab.ipynb)
+- [Laya_V43_V31_Fidelity_First_Full_Then_Sliding_Colab](Laya_V43_V31_Fidelity_First_Full_Then_Sliding_Colab.ipynb)
+- [Laya_V44_Fast_Fidelity_Research_Colab](Laya_V44_Fast_Fidelity_Research_Colab.ipynb)
+- [Laya_V45_Lean_Attention_Colab](Laya_V45_Lean_Attention_Colab.ipynb)
+- [Laya_V46_Marker_Head_Fast_Colab](Laya_V46_Marker_Head_Fast_Colab.ipynb)
+- [Laya_V46_Publish_Results_to_HuggingFace_Colab](Laya_V46_Publish_Results_to_HuggingFace_Colab.ipynb)
+- [Laya_V46_Train_and_Publish_Laya_1p2_Speedup_Colab](Laya_V46_Train_and_Publish_Laya_1p2_Speedup_Colab.ipynb)
+- [Laya_V47_Full_2SharedWindows_Colab](Laya_V47_Full_2SharedWindows_Colab.ipynb)
+- [Laya_V48_SVD_Delta_Shared_Attention_Colab](Laya_V48_SVD_Delta_Shared_Attention_Colab.ipynb)
+- [Laya_V49_Selective_SVD_Attention_Colab](Laya_V49_Selective_SVD_Attention_Colab.ipynb)
+- [Laya_V50_All28_BruteForce_Hybrid_SVD_Colab](Laya_V50_All28_BruteForce_Hybrid_SVD_Colab.ipynb)
+- [Laya_V51_All28_EarlyStop_Publish_Colab](Laya_V51_All28_EarlyStop_Publish_Colab.ipynb)

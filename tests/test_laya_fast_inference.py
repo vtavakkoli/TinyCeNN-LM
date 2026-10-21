@@ -51,6 +51,11 @@ def test_end_to_end_tiny_modernbert(length, dtype):
     pos = torch.tensor([[0, min(2, length - 1), min(4, length - 1)],
                         [0, min(2, length - 1), 0]])
     mm = torch.tensor([[True, True, True], [True, True, False]])
+    if length == 1:
+        # Only one unique token exists. Repeating it as multiple valid options
+        # creates exact ties whose argmax depends on floating-point rounding.
+        # Keep the singleton boundary test and mask the duplicate slots.
+        mm[:, 1:] = False
     batch = dict(input_ids=ids, attention_mask=mask, marker_pos=pos,
                  marker_mask=mm, qtype=torch.tensor([0, 2]))
     before = {k: v.clone() for k, v in model.state_dict().items()}
