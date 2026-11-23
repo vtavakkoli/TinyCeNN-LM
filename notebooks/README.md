@@ -1,6 +1,6 @@
 # Notebook catalog
 
-All **120 notebooks** live under this directory: **90 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
+All **121 notebooks** live under this directory: **90 current entries** and **30 archived experiments**. Start with a core reference or choose an explicitly experimental track below.
 
 [Project overview](../README.md) · [Model status](../MODEL_STATUS.md) · [Archived notebooks](archive/README.md) · [Path migration](../docs/NOTEBOOK_MIGRATION.md)
 
@@ -44,6 +44,16 @@ Do **not** retrain another SmolLM2-360M replacement before checking the original
 | [SmolLM2 PDelta3 CLVR Sequential Optimization](SmolLM2_PDelta3_CLVR_Sequential_Optimization_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/SmolLM2_PDelta3_CLVR_Sequential_Optimization_Colab.ipynb) |
 
 ## Laya / ModernBERT
+
+### New ternary and GPU inference research
+
+| Notebook | Run |
+|---|---|
+| [Laya V6 native INT4 GPU speed/accuracy gates](Laya_V6_Native_INT4_Fast_GPU_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V6_Native_INT4_Fast_GPU_Colab.ipynb) |
+| [Laya V7 T4 s4×s4 experimental path (retired; redirects to V8)](Laya_V7_T4_True_INT4xINT4_TensorCore_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V7_T4_True_INT4xINT4_TensorCore_Colab.ipynb) |
+| [Laya V8 T4 bitsandbytes precompiled INT4](Laya_V8_T4_Precompiled_BNB_Fast_INT4_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V8_T4_Precompiled_BNB_Fast_INT4_Colab.ipynb) |
+| [Laya V9 ternary CeNN {-1,0,+1} concat/memory ablation](Laya_V9_Ternary_CeNN_Concat_Memory_Ablation_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_V9_Ternary_CeNN_Concat_Memory_Ablation_Colab.ipynb) |
+
 
 **FP16 benchmark V2:** [Compiled-original control + complete API](Laya_FP16_Compiled_Control_API_V2_Colab.ipynb) · [Run in Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/codex/laya-fp16-fast-inference/notebooks/Laya_FP16_Compiled_Control_API_V2_Colab.ipynb). Separates compilation gains from implementation gains; supports custom JSONL cases.
 
@@ -96,6 +106,10 @@ Do **not** retrain another SmolLM2-360M replacement before checking the original
 
 | Notebook | Run |
 |---|---|
+| [Qwen3.5 0.8B Delta-CeNN V5.6 — Four-Way Native/Delta18/Hybrid/Forced24 Comparison](Qwen35_08B_DeltaCeNN_V56_FourWay_QualityGated_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_DeltaCeNN_V56_FourWay_QualityGated_Colab.ipynb) |
+| [Qwen3.5 0.8B Delta-CeNN V5.5 — Chunk-Cell Optimization, Quality Gates and Fast Evaluation](Qwen35_08B_DeltaCeNN_V55_ChunkCell_Optimized_FastEval_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_DeltaCeNN_V55_ChunkCell_Optimized_FastEval_Colab.ipynb) |
+| [Qwen3.5 0.8B Delta-CeNN V5.4 All 24 — Quality-Gated Fast Evaluation and HF Research Export](Qwen35_08B_DeltaCeNN_V54_All24_QualityGated_FastEval_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_DeltaCeNN_V54_All24_QualityGated_FastEval_Colab.ipynb) |
+| [Qwen3.5 0.8B Delta-CeNN + V5.3 All 24 Progressive (experimental)](Qwen35_08B_DeltaCeNN_V53_All24_Progressive_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_DeltaCeNN_V53_All24_Progressive_Colab.ipynb) |
 | [Qwen35 08B CeNNMixer v4 DeltaCell](Qwen35_08B_CeNNMixer_v4_DeltaCell_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNNMixer_v4_DeltaCell_Colab.ipynb) |
 | [Qwen3.5 0.8B CeNN-X2 Middle-Layer Ablation (experimental)](Qwen35_08B_CeNN_X2_Middle_Layer_Ablation_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNN_X2_Middle_Layer_Ablation_Colab.ipynb) |
 | [Qwen3.5 0.8B CeNN-DeltaCell V3 Cellular Memory (experimental)](Qwen35_08B_CeNN_DeltaCell_V3_Cellular_Memory_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNN_DeltaCell_V3_Cellular_Memory_Colab.ipynb) |
@@ -103,6 +117,7 @@ Do **not** retrain another SmolLM2-360M replacement before checking the original
 | [Qwen3.5 0.8B CeNN V5 Head Rescue (experimental)](Qwen35_08B_CeNN_HeadRescue_V5_Quality_First_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNN_HeadRescue_V5_Quality_First_Colab.ipynb) |
 | [Qwen3.5 0.8B CeNN V5.2 Fidelity Recovery (experimental)](Qwen35_08B_CeNN_HeadRescue_V52_FidelityRecovery_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNN_HeadRescue_V52_FidelityRecovery_Colab.ipynb) |
 | [Qwen3.5 0.8B CeNN V5.3 Cross-Calibrated Head Rescue (experimental)](Qwen35_08B_CeNN_HeadRescue_V53_CrossCalibrated_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNN_HeadRescue_V53_CrossCalibrated_Colab.ipynb) |
+| [Qwen3.5-0.8B CeNN V5.3 all six full-attention layers (experimental)](Qwen35_08B_CeNN_V53_All6_FullAttention_Sequential_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNN_V53_All6_FullAttention_Sequential_Colab.ipynb) |
 | [Qwen3.5 0.8B CeNN V5.1 Checkpoint-Guided Head Rescue (experimental)](Qwen35_08B_CeNN_HeadRescue_V51_Warmstart_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_CeNN_HeadRescue_V51_Warmstart_Colab.ipynb) |
 | [Qwen35 08B FlyCore from v3 Standalone](Qwen35_08B_FlyCore_from_v3_Standalone_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_FlyCore_from_v3_Standalone_Colab.ipynb) |
 | [Qwen35 08B FlyCore v2 from v3](Qwen35_08B_FlyCore_v2_from_v3_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Qwen35_08B_FlyCore_v2_from_v3_Colab.ipynb) |
@@ -117,8 +132,13 @@ Do **not** retrain another SmolLM2-360M replacement before checking the original
 
 ## SmolLM2 experiments
 
+
+
 | Notebook | Run |
 |---|---|
+| [SmolLM2-360M V10 selective ternary CeNN replacement](SmolLM2_360M_Ternary_CeNN_Selective_Replacement_V10_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/SmolLM2_360M_Ternary_CeNN_Selective_Replacement_V10_Colab.ipynb) |
+| [SmolLM2-360M V11 multi-layer activation-aware ternary CeNN QAT + distillation](SmolLM2_360M_V11_MultiLayer_Ternary_CeNN_QAT_Distillation_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/SmolLM2_360M_V11_MultiLayer_Ternary_CeNN_QAT_Distillation_Colab.ipynb) |
+| [SmolLM2-360M V12 force all 32 layers (224 ternary projections)](SmolLM2_360M_V12_All32_BruteForce_Ternary_CeNN_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/SmolLM2_360M_V12_All32_BruteForce_Ternary_CeNN_Colab.ipynb) |
 | [FlyFFN v2 SmolLM2 135M](FlyFFN_v2_SmolLM2_135M_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/FlyFFN_v2_SmolLM2_135M_Colab.ipynb) |
 | [SmolLM2 MemoryFusion Sequential Acceptance v3](SmolLM2_MemoryFusion_Sequential_Acceptance_v3_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/SmolLM2_MemoryFusion_Sequential_Acceptance_v3_Colab.ipynb) |
 | [SmolLM2 Nonlinear Recurrent Readout](SmolLM2_Nonlinear_Recurrent_Readout_Colab.ipynb) | [Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/SmolLM2_Nonlinear_Recurrent_Readout_Colab.ipynb) |
@@ -167,6 +187,34 @@ Do **not** retrain another SmolLM2-360M replacement before checking the original
 
 ## Laya FP16 V3: all-28-layer brute-force search
 
-[Open V3 in Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/codex/laya-fp16-fast-inference/notebooks/Laya_FP16_All28_BruteForce_V3_Colab.ipynb) · [Method and V2 findings](../docs/LAYA_FP16_LAYER_SEARCH_V3.md)
+[V3 notebook](Laya_FP16_All28_BruteForce_V3_Colab.ipynb) · [Open V3 in Colab](https://colab.research.google.com/github/vtavakkoli/TinyCeNN-LM/blob/main/notebooks/Laya_FP16_All28_BruteForce_V3_Colab.ipynb) · [Method and V2 findings](../docs/LAYA_FP16_LAYER_SEARCH_V3.md)
 
 Search attention/FFN/block bypasses and activation-ranked FFN channel pruning at every layer, then bounded combinations. Includes labelled case-disjoint validation, compiled speed controls, complete API timing, a final official-test audit and a reconstructable recipe. GPU results are required before claiming further improvement.
+
+### Additional experiment notebooks
+
+- [Jev_CeNN_All28_AttentionOnly_BruteForce_FrozenFFN_V4_Colab](Jev_CeNN_All28_AttentionOnly_BruteForce_FrozenFFN_V4_Colab.ipynb)
+- [Jev_CeNN_All28_FP16_Stable_Joint_Substitution_V7_Colab](Jev_CeNN_All28_FP16_Stable_Joint_Substitution_V7_Colab.ipynb)
+- [Jev_CeNN_All28_Forced_Complete_HF_Export_V5_Colab](Jev_CeNN_All28_Forced_Complete_HF_Export_V5_Colab.ipynb)
+- [Jev_CeNN_All28_Substitution_LR_0p01_to_0p002_V6_Colab](Jev_CeNN_All28_Substitution_LR_0p01_to_0p002_V6_Colab.ipynb)
+- [Jev_CeNN_Layer15_FrozenFFN_GlobalAnchors_FastV3_Colab](Jev_CeNN_Layer15_FrozenFFN_GlobalAnchors_FastV3_Colab.ipynb)
+- [Jev_CeNN_Layer15_FrozenFFN_Window_CeNN_Ablation_Colab](Jev_CeNN_Layer15_FrozenFFN_Window_CeNN_Ablation_Colab.ipynb)
+- [Jev_CeNN_Top_AttentionOnly_FrozenFFN_Fast_Colab](Jev_CeNN_Top_AttentionOnly_FrozenFFN_Fast_Colab.ipynb)
+- [Laya-1.2-speedup](Laya-1.2-speedup.ipynb)
+- [Laya_1p2_All28_MixedBit_SparseRecovery_V4_Colab](Laya_1p2_All28_MixedBit_SparseRecovery_V4_Colab.ipynb)
+- [Laya_1p2_FP16_Ternary_Cascade_GPU_Ablation_Colab](Laya_1p2_FP16_Ternary_Cascade_GPU_Ablation_Colab.ipynb)
+- [Laya_1p2_Force_All28_MixedBit_Accuracy_Recovery_Colab](Laya_1p2_Force_All28_MixedBit_Accuracy_Recovery_Colab.ipynb)
+- [Laya_1p2_Speedup_Full_Standalone_Export_Colab](Laya_1p2_Speedup_Full_Standalone_Export_Colab.ipynb)
+- [Laya_1p2_Speedup_Full_Standalone_FP16_Export_Colab](Laya_1p2_Speedup_Full_Standalone_FP16_Export_Colab.ipynb)
+- [Laya_1p2_Tiled_Ternary_V2_ActivationAware_Colab](Laya_1p2_Tiled_Ternary_V2_ActivationAware_Colab.ipynb)
+- [Laya_V43_V31_Fidelity_First_Full_Then_Sliding_Colab](Laya_V43_V31_Fidelity_First_Full_Then_Sliding_Colab.ipynb)
+- [Laya_V44_Fast_Fidelity_Research_Colab](Laya_V44_Fast_Fidelity_Research_Colab.ipynb)
+- [Laya_V45_Lean_Attention_Colab](Laya_V45_Lean_Attention_Colab.ipynb)
+- [Laya_V46_Marker_Head_Fast_Colab](Laya_V46_Marker_Head_Fast_Colab.ipynb)
+- [Laya_V46_Publish_Results_to_HuggingFace_Colab](Laya_V46_Publish_Results_to_HuggingFace_Colab.ipynb)
+- [Laya_V46_Train_and_Publish_Laya_1p2_Speedup_Colab](Laya_V46_Train_and_Publish_Laya_1p2_Speedup_Colab.ipynb)
+- [Laya_V47_Full_2SharedWindows_Colab](Laya_V47_Full_2SharedWindows_Colab.ipynb)
+- [Laya_V48_SVD_Delta_Shared_Attention_Colab](Laya_V48_SVD_Delta_Shared_Attention_Colab.ipynb)
+- [Laya_V49_Selective_SVD_Attention_Colab](Laya_V49_Selective_SVD_Attention_Colab.ipynb)
+- [Laya_V50_All28_BruteForce_Hybrid_SVD_Colab](Laya_V50_All28_BruteForce_Hybrid_SVD_Colab.ipynb)
+- [Laya_V51_All28_EarlyStop_Publish_Colab](Laya_V51_All28_EarlyStop_Publish_Colab.ipynb)

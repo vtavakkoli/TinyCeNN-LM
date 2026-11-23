@@ -18,7 +18,12 @@ def fake_rope(q,k,cos,sin):
     c,s=cos.unsqueeze(1),sin.unsqueeze(1)
     return q*c+rot(q)*s, k*c+rot(k)*s
 mod.apply_rotary_pos_emb=fake_rope
-sys.modules.setdefault('transformers.models.qwen3_5.modeling_qwen3_5',mod)
+
+@pytest.fixture(autouse=True)
+def isolated_qwen_rope(monkeypatch):
+    # Scope the lightweight reference to these tests. A collection-time stub
+    # hides the real Qwen model classes from unrelated integration tests.
+    monkeypatch.setitem(sys.modules, 'transformers.models.qwen3_5.modeling_qwen3_5', mod)
 
 from tinycenn_lm.cenn_deltacell_v3 import CeNNDeltaCellV3
 from tinycenn_lm.cenn_memorygraph_v4 import CeNNMemoryGraphV4
